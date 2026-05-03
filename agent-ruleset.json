@@ -1,0 +1,10 @@
+{
+  "source": "github:metyatech/agent-rules@HEAD",
+  "domains": ["node"],
+  "extra": [],
+  "claude": {
+    "enabled": true,
+    "output": "CLAUDE.md"
+  },
+  "output": "AGENTS.md"
+}

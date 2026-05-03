@@ -1,0 +1,45 @@
+{
+  "name": "@metyatech/symphony",
+  "version": "0.1.0",
+  "description": "A TypeScript implementation of the OpenAI Symphony service specification.",
+  "type": "module",
+  "bin": {
+    "symphony": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
+    "prebuild": "npm run clean",
+    "build": "tsc -p tsconfig.json",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write .",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "verify": "npm run format && npm run lint && npm run build && npm test"
+  },
+  "dependencies": {
+    "commander": "^14.0.2",
+    "liquidjs": "^10.24.0",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^24.10.1",
+    "eslint": "^9.39.1",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.48.1",
+    "vitest": "^4.0.14"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT"
+}

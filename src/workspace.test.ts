@@ -1,0 +1,226 @@
+import { access, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it } from "vitest";
+import { MemoryLogger } from "./logger.js";
+import type { Issue, ServiceConfig } from "./types.js";
+import { ensureInsideRoot, sanitizeWorkspaceKey, WorkspaceManager } from "./workspace.js";
+
+describe("workspace management", () => {
+  it("sanitizes issue identifiers for workspace keys", () => {
+    expect(sanitizeWorkspaceKey("ABC/123 hello:world")).toBe("ABC_123_hello_world");
+  });
+
+  it("rejects paths outside the workspace root", () => {
+    expect(() => ensureInsideRoot("/tmp/root", "/tmp/root/child")).not.toThrow();
+    expect(() => ensureInsideRoot("/tmp/root", "/tmp/other")).toThrow(/escapes/);
+  });
+
+  it("runs after_create only when the directory is new", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
+    const root = path.join(parent, "missing-root");
+    const marker = path.join(root, "ABC-1", "created.txt");
+    const markerForScript = marker.replaceAll("\\", "\\\\");
+    const config = configFor(
+      root,
+      `node -e "require('fs').writeFileSync('${markerForScript}', 'created')"`
+    );
+    const manager = new WorkspaceManager(() => config, new MemoryLogger());
+
+    const first = await manager.ensureWorkspace(makeIssue("ABC-1"));
+    const second = await manager.ensureWorkspace(makeIssue("ABC-1"));
+
+    await expect(access(marker)).resolves.toBeUndefined();
+    expect(first.created_now).toBe(true);
+    expect(second.created_now).toBe(false);
+  });
+
+  it("rejects existing symlink or junction workspace directories", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
+    const outside = await mkdtemp(path.join(os.tmpdir(), "symphony-outside-"));
+    await symlink(
+      outside,
+      path.join(root, "ABC-3"),
+      process.platform === "win32" ? "junction" : "dir"
+    );
+    const manager = new WorkspaceManager(() => configFor(root, null), new MemoryLogger());
+
+    await expect(manager.ensureWorkspace(makeIssue("ABC-3"))).rejects.toThrow(/Workspace path/);
+  });
+
+  it("ignores before_remove hook failures and removes the directory", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
+    const config = configFor(root, null);
+    config.hooks.before_remove = "exit 7";
+    const manager = new WorkspaceManager(() => config, new MemoryLogger());
+    const workspace = await manager.ensureWorkspace(makeIssue("ABC-2"));
+    await writeFile(path.join(workspace.path, "file.txt"), "x", "utf8");
+
+    await manager.removeWorkspace(makeIssue("ABC-2"));
+
+    await expect(access(workspace.path)).rejects.toThrow();
+  });
+
+  it("ignores removal for missing terminal workspaces", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
+    const manager = new WorkspaceManager(() => configFor(root, null), new MemoryLogger());
+
+    await expect(manager.removeWorkspace(makeIssue("MISSING-1"))).resolves.toBeUndefined();
+  });
+
+  it("exposes issue and workspace metadata to hooks via SYMPHONY_* environment variables", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
+    const root = path.join(parent, "root");
+    const marker = path.join(parent, "hook-env.json");
+    const markerForScript = marker.replaceAll("\\", "\\\\");
+    const script =
+      `node -e "require('fs').writeFileSync('${markerForScript}', JSON.stringify({` +
+      "hook: process.env.SYMPHONY_HOOK_NAME," +
+      "workflow_dir: process.env.SYMPHONY_WORKFLOW_DIR," +
+      "workspace_path: process.env.SYMPHONY_WORKSPACE_PATH," +
+      "workspace_key: process.env.SYMPHONY_WORKSPACE_KEY," +
+      "workspace_created_now: process.env.SYMPHONY_WORKSPACE_CREATED_NOW," +
+      "id: process.env.SYMPHONY_ISSUE_ID," +
+      "identifier: process.env.SYMPHONY_ISSUE_IDENTIFIER," +
+      "title: process.env.SYMPHONY_ISSUE_TITLE," +
+      "state: process.env.SYMPHONY_ISSUE_STATE," +
+      "priority: process.env.SYMPHONY_ISSUE_PRIORITY," +
+      "branch_name: process.env.SYMPHONY_ISSUE_BRANCH_NAME," +
+      "url: process.env.SYMPHONY_ISSUE_URL," +
+      "labels: process.env.SYMPHONY_ISSUE_LABELS," +
+      `description: process.env.SYMPHONY_ISSUE_DESCRIPTION}))"`;
+    const config = configFor(root, script);
+    const manager = new WorkspaceManager(() => config, new MemoryLogger());
+
+    const issue: Issue = {
+      id: "issue-123",
+      identifier: "FE-7",
+      title: "Replace homepage hero",
+      description: "long description",
+      priority: 2,
+      state: "Todo",
+      branch_name: "fe/hero",
+      url: "https://linear.app/x/FE-7",
+      labels: ["repo:frontend-repo", "area:hero"],
+      blocked_by: [],
+      created_at: null,
+      updated_at: null
+    };
+
+    const workspace = await manager.ensureWorkspace(issue);
+    const captured = JSON.parse(await readFile(marker, "utf8")) as Record<string, string>;
+
+    expect(captured).toMatchObject({
+      hook: "after_create",
+      workflow_dir: config.workflowDir,
+      workspace_path: workspace.path,
+      workspace_key: "FE-7",
+      workspace_created_now: "true",
+      id: "issue-123",
+      identifier: "FE-7",
+      title: "Replace homepage hero",
+      state: "Todo",
+      priority: "2",
+      branch_name: "fe/hero",
+      url: "https://linear.app/x/FE-7",
+      labels: "repo:frontend-repo,area:hero",
+      description: "long description"
+    });
+  });
+
+  it("does not leak parent-process secrets into the hook environment", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
+    const root = path.join(parent, "root");
+    const marker = path.join(parent, "hook-secret.json");
+    const markerForScript = marker.replaceAll("\\", "\\\\");
+    const script =
+      `node -e "require('fs').writeFileSync('${markerForScript}', JSON.stringify({` +
+      "linear: process.env.LINEAR_API_KEY ?? null," +
+      "token: process.env.GITHUB_TOKEN ?? null," +
+      `marker: process.env.SYMPHONY_HOOK_MARKER ?? null}))"`;
+    const config = configFor(root, script);
+    const manager = new WorkspaceManager(() => config, new MemoryLogger());
+
+    const previous = {
+      linear: process.env.LINEAR_API_KEY,
+      token: process.env.GITHUB_TOKEN,
+      marker: process.env.SYMPHONY_HOOK_MARKER
+    };
+    process.env.LINEAR_API_KEY = "lin_api_should_not_leak";
+    process.env.GITHUB_TOKEN = "ghp_should_not_leak";
+    process.env.SYMPHONY_HOOK_MARKER = "non-secret-passes-through";
+
+    try {
+      await manager.ensureWorkspace(makeIssue("SEC-1"));
+      const captured = JSON.parse(await readFile(marker, "utf8")) as Record<string, string | null>;
+      expect(captured.linear).toBeNull();
+      expect(captured.token).toBeNull();
+      expect(captured.marker).toBe("non-secret-passes-through");
+    } finally {
+      restoreEnv("LINEAR_API_KEY", previous.linear);
+      restoreEnv("GITHUB_TOKEN", previous.token);
+      restoreEnv("SYMPHONY_HOOK_MARKER", previous.marker);
+    }
+  });
+});
+
+function makeIssue(identifier: string, state = "Todo"): Issue {
+  return {
+    id: identifier,
+    identifier,
+    title: identifier,
+    description: null,
+    priority: null,
+    state,
+    branch_name: null,
+    url: null,
+    labels: [],
+    blocked_by: [],
+    created_at: null,
+    updated_at: null
+  };
+}
+
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+function configFor(root: string, afterCreate: string | null): ServiceConfig {
+  return {
+    workflowPath: path.join(root, "WORKFLOW.md"),
+    workflowDir: root,
+    tracker: {
+      kind: "linear",
+      endpoint: "https://api.linear.app/graphql",
+      api_key: "x",
+      project_slug: "P",
+      active_states: ["Todo"],
+      terminal_states: ["Done"]
+    },
+    polling: { interval_ms: 30000 },
+    workspace: { root },
+    hooks: {
+      after_create: afterCreate,
+      before_run: null,
+      after_run: null,
+      before_remove: null,
+      timeout_ms: 30000
+    },
+    agent: {
+      max_concurrent_agents: 10,
+      max_turns: 20,
+      max_retry_backoff_ms: 300000,
+      max_concurrent_agents_by_state: new Map()
+    },
+    codex: {
+      command: 'node -e "process.exit(0)"',
+      approval_policy: undefined,
+      thread_sandbox: undefined,
+      turn_sandbox_policy: undefined,
+      turn_timeout_ms: 1000,
+      read_timeout_ms: 5000,
+      stall_timeout_ms: 300000
+    }
+  };
+}
