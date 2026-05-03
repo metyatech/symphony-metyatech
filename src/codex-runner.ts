@@ -5,14 +5,22 @@ import { SymphonyError, messageFromUnknown } from "./errors.js";
 import { redactSecrets, sanitizedProcessEnv } from "./process-safety.js";
 import { renderPrompt } from "./workflow.js";
 import { ensureRealDirectoryInsideRoot } from "./workspace.js";
-import type { Issue, Logger, LiveSession, RunResult, ServiceConfig } from "./types.js";
+import type {
+  Issue,
+  Logger,
+  LiveSession,
+  RepoCheckout,
+  RunResult,
+  ServiceConfig
+} from "./types.js";
 
 export interface AgentRunner {
   run(
     issue: Issue,
     workspacePath: string,
     attempt: number | null,
-    onSession: (session: LiveSession) => void
+    onSession: (session: LiveSession) => void,
+    repositories?: RepoCheckout[]
   ): Promise<RunResult>;
   cancel(reason: string): Promise<void>;
 }
@@ -59,13 +67,14 @@ export class CodexRunner implements AgentRunner {
     issue: Issue,
     workspacePath: string,
     attempt: number | null,
-    onSession: (session: LiveSession) => void
+    onSession: (session: LiveSession) => void,
+    repositories: RepoCheckout[] = []
   ): Promise<RunResult> {
     const started = Date.now();
     const config = this.getConfig();
     try {
       await ensureRealDirectoryInsideRoot(config.workspace.root, workspacePath);
-      const prompt = await renderPrompt(this.getPromptTemplate(), issue, attempt);
+      const prompt = await renderPrompt(this.getPromptTemplate(), issue, attempt, repositories);
       await this.runAppServerTurn(config, workspacePath, prompt, issue, onSession);
       return {
         status: this.cancelled ? "canceled" : "succeeded",

@@ -8,7 +8,8 @@ export type SymphonyErrorCode =
   | "workspace_safety_error"
   | "hook_failed"
   | "tracker_error"
-  | "codex_runner_error";
+  | "codex_runner_error"
+  | "repositories_selection_empty";
 
 export class SymphonyError extends Error {
   constructor(

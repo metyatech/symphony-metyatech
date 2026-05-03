@@ -148,6 +148,14 @@ function configFor(root: string): ServiceConfig {
     },
     polling: { interval_ms: 30000 },
     workspace: { root },
+    repositories: {
+      owner: null,
+      base_url: "https://github.com",
+      protocol: "https",
+      label_prefix: "repo:",
+      default: [],
+      required: false
+    },
     hooks: {
       after_create: null,
       before_run: null,

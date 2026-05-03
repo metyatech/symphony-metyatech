@@ -4,7 +4,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { MemoryLogger } from "./logger.js";
 import type { Issue, ServiceConfig } from "./types.js";
-import { ensureInsideRoot, sanitizeWorkspaceKey, WorkspaceManager } from "./workspace.js";
+import {
+  buildHookEnv,
+  ensureInsideRoot,
+  sanitizeWorkspaceKey,
+  WorkspaceManager
+} from "./workspace.js";
 
 describe("workspace management", () => {
   it("sanitizes issue identifiers for workspace keys", () => {
@@ -128,6 +133,46 @@ describe("workspace management", () => {
     });
   });
 
+  it("exports SYMPHONY_REPOS and per-repo env slots when the workspace has repository checkouts", () => {
+    const root = "/tmp/symphony-root";
+    const config = configFor(root, null);
+    const workspace = {
+      path: path.join(root, "FE-7"),
+      workspace_key: "FE-7",
+      created_now: true,
+      repositories: [
+        {
+          name: "frontend",
+          path: path.join(root, "FE-7", "frontend"),
+          url: "https://github.com/metyatech/frontend.git",
+          created_now: true
+        },
+        {
+          name: "shared-lib",
+          path: path.join(root, "FE-7", "shared-lib"),
+          url: "https://github.com/metyatech/shared-lib.git",
+          created_now: false
+        }
+      ]
+    };
+    const env = buildHookEnv(
+      "after_create",
+      config,
+      {
+        ...makeIssue("FE-7"),
+        labels: ["repo:frontend", "repo:shared-lib"]
+      },
+      workspace
+    );
+
+    expect(env.SYMPHONY_REPOS).toBe("frontend,shared-lib");
+    expect(env.SYMPHONY_REPO_FRONTEND_NAME).toBe("frontend");
+    expect(env.SYMPHONY_REPO_FRONTEND_PATH).toBe(workspace.repositories[0]?.path);
+    expect(env.SYMPHONY_REPO_FRONTEND_CREATED_NOW).toBe("true");
+    expect(env.SYMPHONY_REPO_SHARED_LIB_CREATED_NOW).toBe("false");
+    expect(env.SYMPHONY_REPO_SHARED_LIB_URL).toBe("https://github.com/metyatech/shared-lib.git");
+  });
+
   it("does not leak parent-process secrets into the hook environment", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
     const root = path.join(parent, "root");
@@ -200,6 +245,14 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
     },
     polling: { interval_ms: 30000 },
     workspace: { root },
+    repositories: {
+      owner: null,
+      base_url: "https://github.com",
+      protocol: "https",
+      label_prefix: "repo:",
+      default: [],
+      required: false
+    },
     hooks: {
       after_create: afterCreate,
       before_run: null,

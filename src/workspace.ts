@@ -3,7 +3,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { SymphonyError, messageFromUnknown } from "./errors.js";
 import { sanitizedProcessEnv } from "./process-safety.js";
-import type { Issue, Logger, ServiceConfig, Workspace } from "./types.js";
+import { selectRepositoriesForIssue } from "./workflow.js";
+import type { Issue, Logger, RepoCheckout, ServiceConfig, Workspace } from "./types.js";
 
 export type HookName = "after_create" | "before_run" | "after_run" | "before_remove";
 
@@ -51,7 +52,7 @@ export function buildHookEnv(
   issue: Issue,
   workspace: Workspace
 ): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...sanitizedProcessEnv(),
     SYMPHONY_HOOK_NAME: hookName,
     SYMPHONY_WORKFLOW_DIR: config.workflowDir,
@@ -67,8 +68,21 @@ export function buildHookEnv(
     SYMPHONY_ISSUE_BRANCH_NAME: issue.branch_name ?? "",
     SYMPHONY_ISSUE_URL: issue.url ?? "",
     SYMPHONY_ISSUE_LABELS: issue.labels.join(","),
-    SYMPHONY_ISSUE_DESCRIPTION: issue.description ?? ""
+    SYMPHONY_ISSUE_DESCRIPTION: issue.description ?? "",
+    SYMPHONY_REPOS: workspace.repositories.map((repo) => repo.name).join(",")
   };
+  for (const repo of workspace.repositories) {
+    const slot = repoEnvSlot(repo.name);
+    env[`SYMPHONY_REPO_${slot}_NAME`] = repo.name;
+    env[`SYMPHONY_REPO_${slot}_PATH`] = repo.path;
+    env[`SYMPHONY_REPO_${slot}_URL`] = repo.url;
+    env[`SYMPHONY_REPO_${slot}_CREATED_NOW`] = repo.created_now ? "true" : "false";
+  }
+  return env;
+}
+
+function repoEnvSlot(name: string): string {
+  return name.replace(/[^A-Za-z0-9]/g, "_").toUpperCase();
 }
 
 export class WorkspaceManager {
@@ -97,11 +111,65 @@ export class WorkspaceManager {
       if (!isAlreadyExistsError(error)) throw error;
     }
     await ensureRealDirectoryInsideRoot(config.workspace.root, workspacePath);
-    const workspace: Workspace = { path: workspacePath, workspace_key, created_now: created };
+    const repositories = await this.ensureRepoCheckouts(issue, workspacePath);
+    const workspace: Workspace = {
+      path: workspacePath,
+      workspace_key,
+      created_now: created,
+      repositories
+    };
     if (created && config.hooks.after_create) {
       await this.runHook("after_create", config.hooks.after_create, issue, workspace, true);
     }
     return workspace;
+  }
+
+  /**
+   * Resolve the repositories selected for `issue`, then for each one ensure
+   * `<workspace>/<repo>/` is a real Git checkout pointing at `origin`. New
+   * directories are cloned; existing directories are reused unchanged so the
+   * agent's in-progress branches and uncommitted edits survive across runs.
+   * Throws when `repositories.required` is set but selection is empty.
+   */
+  private async ensureRepoCheckouts(issue: Issue, workspacePath: string): Promise<RepoCheckout[]> {
+    const config = this.getConfig();
+    const selections = selectRepositoriesForIssue(config, issue);
+    if (selections.length === 0) {
+      if (config.repositories.required) {
+        throw new SymphonyError(
+          "repositories_selection_empty",
+          `no repositories matched issue ${issue.identifier}; configure labels prefixed with ${config.repositories.label_prefix} or repositories.default`
+        );
+      }
+      return [];
+    }
+    const checkouts: RepoCheckout[] = [];
+    for (const selection of selections) {
+      const repoPath = path.resolve(workspacePath, selection.name);
+      ensureInsideRoot(workspacePath, repoPath);
+      const exists = await pathExists(repoPath);
+      if (!exists) {
+        await mkdir(path.dirname(repoPath), { recursive: true });
+        await runShell(
+          `git clone ${shellEscape(selection.url)} ${shellEscape(repoPath)}`,
+          workspacePath,
+          config.hooks.timeout_ms
+        );
+        this.logger.info("repo_cloned", {
+          repo: selection.name,
+          url: selection.url,
+          path: repoPath,
+          identifier: issue.identifier
+        });
+      }
+      checkouts.push({
+        name: selection.name,
+        path: repoPath,
+        url: selection.url,
+        created_now: !exists
+      });
+    }
+    return checkouts;
   }
 
   async beforeRun(issue: Issue, workspace: Workspace): Promise<void> {
@@ -122,7 +190,8 @@ export class WorkspaceManager {
     const workspace: Workspace = {
       path: workspacePath,
       workspace_key,
-      created_now: false
+      created_now: false,
+      repositories: []
     };
     if (config.hooks.before_remove) {
       await this.runHook("before_remove", config.hooks.before_remove, issue, workspace, false);
@@ -193,6 +262,13 @@ export function runShell(
 
 function isAlreadyExistsError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+
+function shellEscape(value: string): string {
+  if (process.platform === "win32") {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 async function pathExists(target: string): Promise<boolean> {

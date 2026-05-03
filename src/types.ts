@@ -24,6 +24,22 @@ export interface WorkflowDefinition {
   prompt_template: string;
 }
 
+export interface RepositoriesConfig {
+  owner: string | null;
+  base_url: string;
+  protocol: "https" | "ssh";
+  label_prefix: string;
+  default: string[];
+  required: boolean;
+}
+
+export interface RepoCheckout {
+  name: string;
+  path: string;
+  url: string;
+  created_now: boolean;
+}
+
 export interface ServiceConfig {
   workflowPath: string;
   workflowDir: string;
@@ -37,6 +53,7 @@ export interface ServiceConfig {
   };
   polling: { interval_ms: number };
   workspace: { root: string };
+  repositories: RepositoriesConfig;
   hooks: {
     after_create: string | null;
     before_run: string | null;
@@ -65,6 +82,7 @@ export interface Workspace {
   path: string;
   workspace_key: string;
   created_now: boolean;
+  repositories: RepoCheckout[];
 }
 
 export interface LiveSession {

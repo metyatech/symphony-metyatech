@@ -59,6 +59,51 @@ LINEAR_API_KEY=lin_api_xxx symphony --workflow ./WORKFLOW.md --check --json
 
 Required dispatch fields are `tracker.kind`, `tracker.api_key`, `tracker.project_slug`, and `codex.command`. Defaults follow the upstream Symphony specification for polling interval, active and terminal states, hook timeout, concurrency, retry backoff, and Codex timeouts.
 
+## Multi-Repository Workspaces
+
+A single workflow can drive work that spans many repositories. Configure a
+`repositories:` block in `WORKFLOW.md` and Symphony clones the right repos
+into each issue workspace before the agent starts.
+
+```yaml
+repositories:
+  owner: metyatech # default GitHub owner for repo:<name> labels
+  base_url: https://github.com # default
+  protocol: https # https or ssh
+  label_prefix: "repo:" # how repos are picked from issue labels
+  default: [] # repos to always clone, e.g. ["shared-config"]
+  required: false # set true to fail when no repos are selected
+```
+
+Repositories are selected from issue labels matching `label_prefix` and from
+`repositories.default`. A label of `repo:frontend` resolves to
+`metyatech/frontend`; a label of `repo:other-org/lib` overrides the owner.
+Selected repos are cloned into `<workspace>/<name>/` on first run and reused
+unchanged on subsequent runs so the agent's branches and uncommitted edits
+survive across continuation turns.
+
+The Liquid prompt template receives a `repos` array alongside `issue` and
+`attempt`, so a single template can address every selected repo:
+
+```md
+You are working on {{ issue.identifier }}.
+
+Available repositories:
+{% for repo in repos %}- {{ repo.name }} at {{ repo.path }}
+{% endfor %}
+```
+
+Hooks receive the same information through `SYMPHONY_REPOS` (a comma-separated
+list of selected repo names) and per-repo env slots
+`SYMPHONY_REPO_<NAME>_PATH`, `SYMPHONY_REPO_<NAME>_URL`,
+`SYMPHONY_REPO_<NAME>_NAME`, `SYMPHONY_REPO_<NAME>_CREATED_NOW`. The slot is
+the repo name uppercased with non-alphanumeric characters replaced by `_`
+(e.g. `shared-lib` becomes `SYMPHONY_REPO_SHARED_LIB_PATH`).
+
+When no `repositories:` block is present, Symphony stays in single-repo
+(legacy) mode: nothing is cloned automatically, `repos` is an empty array,
+and hook scripts are responsible for any workspace population.
+
 ## Workspace Hooks
 
 Symphony creates and reuses per-issue directories under `workspace.root` but does not clone or reset repositories by itself. Each hook (`after_create`, `before_run`, `after_run`, `before_remove`) is a shell snippet executed with the issue workspace as the current working directory. The same script is invoked on Windows via `powershell.exe -NoProfile -Command` and on POSIX via `sh -lc`.
@@ -83,18 +128,22 @@ The following environment variables are exported to every hook so that a single 
 | `SYMPHONY_ISSUE_LABELS`          | Comma-separated label names.                                                 |
 | `SYMPHONY_ISSUE_DESCRIPTION`     | Issue description (may contain newlines).                                    |
 
-The example below picks a repository from a `repo:<name>` label and clones it into the workspace exactly once:
+For most multi-repo workflows the `repositories:` block above is the
+recommended path: Symphony clones the selected repos for you and the hook
+only needs to perform repo-specific setup (install dependencies, fetch
+branches, etc.). The example below uses `SYMPHONY_REPOS` to install
+dependencies for every cloned repo:
 
 ```yaml
 hooks:
   after_create: |
     set -e
-    REPO=$(printf '%s' "$SYMPHONY_ISSUE_LABELS" | tr ',' '\n' | sed -n 's/^repo://p' | head -n1)
-    if [ -z "$REPO" ]; then
-      echo "issue $SYMPHONY_ISSUE_IDENTIFIER has no repo:* label" >&2
-      exit 1
-    fi
-    git clone "https://github.com/metyatech/${REPO}.git" .
+    IFS=',' read -ra REPOS <<< "$SYMPHONY_REPOS"
+    for repo in "${REPOS[@]}"; do
+      slot=$(printf '%s' "$repo" | tr '[:lower:]-' '[:upper:]_' | tr -dc 'A-Z0-9_')
+      eval path=\$SYMPHONY_REPO_${slot}_PATH
+      (cd "$path" && [ -f package.json ] && npm install) || true
+    done
 ```
 
 Hook failures in `after_create` and `before_run` fail the affected run; `after_run` and `before_remove` failures are logged at `warn` level and do not block teardown.

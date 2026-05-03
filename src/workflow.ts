@@ -4,10 +4,18 @@ import os from "node:os";
 import YAML from "yaml";
 import { Liquid } from "liquidjs";
 import { SymphonyError } from "./errors.js";
-import type { Issue, ServiceConfig, WorkflowDefinition } from "./types.js";
+import type {
+  Issue,
+  RepoCheckout,
+  RepositoriesConfig,
+  ServiceConfig,
+  WorkflowDefinition
+} from "./types.js";
 
 const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
 const DEFAULT_TERMINAL_STATES = ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"];
+const DEFAULT_LABEL_PREFIX = "repo:";
+const DEFAULT_REPO_BASE_URL = "https://github.com";
 
 export async function loadWorkflow(
   workflowPath?: string
@@ -84,6 +92,7 @@ export function resolveServiceConfig(
   const hooks = getRecord(raw.hooks);
   const agent = getRecord(raw.agent);
   const codex = getRecord(raw.codex);
+  const repositories = getRecord(raw.repositories);
 
   const kind = getString(tracker.kind, null);
   const resolvedKind = kind === null ? null : kind.toLowerCase();
@@ -119,6 +128,7 @@ export function resolveServiceConfig(
         workflowDir
       )
     },
+    repositories: resolveRepositoriesConfig(repositories),
     hooks: {
       after_create: getString(hooks.after_create, null),
       before_run: getString(hooks.before_run, null),
@@ -176,17 +186,23 @@ export function validateDispatchConfig(config: ServiceConfig): void {
     throw new SymphonyError("config_validation_error", "codex.turn_timeout_ms must be positive");
   if (config.codex.read_timeout_ms <= 0)
     throw new SymphonyError("config_validation_error", "codex.read_timeout_ms must be positive");
+  if (config.repositories.required && !config.repositories.owner)
+    throw new SymphonyError(
+      "config_validation_error",
+      "repositories.required is true but repositories.owner is not set"
+    );
 }
 
 export async function renderPrompt(
   template: string,
   issue: Issue,
-  attempt: number | null
+  attempt: number | null,
+  repos: RepoCheckout[] = []
 ): Promise<string> {
   const source = template.trim() === "" ? "You are working on an issue from Linear." : template;
   try {
     const engine = new Liquid({ strictVariables: true, strictFilters: true });
-    const rendered: unknown = await engine.parseAndRender(source, { issue, attempt });
+    const rendered: unknown = await engine.parseAndRender(source, { issue, attempt, repos });
     return typeof rendered === "string" ? rendered : String(rendered);
   } catch (error) {
     throw new SymphonyError(
@@ -195,6 +211,75 @@ export async function renderPrompt(
       error
     );
   }
+}
+
+/**
+ * Default repositories configuration. With no `repositories:` block in
+ * `WORKFLOW.md` the service operates in single-repo (legacy) mode: no labels
+ * are interpreted as repos, no auto-cloning happens, and `repos` is empty in
+ * the prompt context. Once a workflow declares `repositories.owner` (or any
+ * `default` repos) Symphony begins clone/reuse on every workspace.
+ */
+function resolveRepositoriesConfig(raw: Record<string, unknown>): RepositoriesConfig {
+  const protocolRaw = getString(raw.protocol, "https");
+  const protocol = protocolRaw === "ssh" ? "ssh" : "https";
+  const baseUrl = getString(raw.base_url, DEFAULT_REPO_BASE_URL) ?? DEFAULT_REPO_BASE_URL;
+  return {
+    owner: getString(raw.owner, null),
+    base_url: baseUrl.replace(/\/+$/, ""),
+    protocol,
+    label_prefix: getString(raw.label_prefix, DEFAULT_LABEL_PREFIX) ?? DEFAULT_LABEL_PREFIX,
+    default: getStringArray(raw.default, []),
+    required: typeof raw.required === "boolean" ? raw.required : false
+  };
+}
+
+const REPO_NAME_PATTERN = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/;
+
+/**
+ * Resolve which repositories an issue's workspace should contain. Repository
+ * names come from labels matching `repositories.label_prefix` and from
+ * `repositories.default`. Names containing `/` are treated as `owner/repo`,
+ * otherwise the configured `owner` is used. Returns an empty list when
+ * multi-repo support is not configured.
+ */
+export function selectRepositoriesForIssue(
+  config: ServiceConfig,
+  issue: Issue
+): { name: string; owner: string | null; url: string }[] {
+  const reposCfg = config.repositories;
+  const seen = new Set<string>();
+  const selected: { name: string; owner: string | null; url: string }[] = [];
+  const candidates: string[] = [];
+  for (const label of issue.labels) {
+    if (label.startsWith(reposCfg.label_prefix)) {
+      candidates.push(label.slice(reposCfg.label_prefix.length).trim());
+    }
+  }
+  candidates.push(...reposCfg.default);
+  for (const candidate of candidates) {
+    if (!candidate || !REPO_NAME_PATTERN.test(candidate)) continue;
+    const [maybeOwner, maybeRepo] = candidate.includes("/")
+      ? candidate.split("/", 2)
+      : [reposCfg.owner, candidate];
+    const owner = maybeOwner ?? reposCfg.owner;
+    const name = maybeRepo;
+    if (!name) continue;
+    const dedupeKey = `${owner ?? ""}/${name}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    if (!owner) continue;
+    selected.push({ name, owner, url: buildRepoUrl(reposCfg, owner, name) });
+  }
+  return selected;
+}
+
+function buildRepoUrl(cfg: RepositoriesConfig, owner: string, name: string): string {
+  if (cfg.protocol === "ssh") {
+    const host = cfg.base_url.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    return `git@${host}:${owner}/${name}.git`;
+  }
+  return `${cfg.base_url}/${owner}/${name}.git`;
 }
 
 export function normalizeState(value: string): string {

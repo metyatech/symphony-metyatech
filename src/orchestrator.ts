@@ -152,7 +152,8 @@ export class Orchestrator {
             this.state.codex_totals.input_tokens += session.last_reported_input_tokens;
             this.state.codex_totals.output_tokens += session.last_reported_output_tokens;
             this.state.codex_totals.total_tokens += session.last_reported_total_tokens;
-          }
+          },
+          workspace.repositories
         );
       } finally {
         await this.workspaceManager.afterRun(currentIssue, workspace);

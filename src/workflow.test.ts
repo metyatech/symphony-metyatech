@@ -6,6 +6,7 @@ import {
   loadServiceConfig,
   loadWorkflow,
   renderPrompt,
+  selectRepositoriesForIssue,
   validateDispatchConfig
 } from "./workflow.js";
 
@@ -59,6 +60,68 @@ describe("workflow loading", () => {
 
   it("fails strict prompt rendering for unknown variables", async () => {
     await expect(renderPrompt("{{ missing.value }}", issue(), null)).rejects.toThrow(/template/i);
+  });
+
+  it("selects repositories from issue labels and defaults, deduplicating and skipping invalid names", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      [
+        "---",
+        "tracker:",
+        "  kind: linear",
+        "  api_key: x",
+        "  project_slug: DEMO",
+        "repositories:",
+        "  owner: metyatech",
+        "  default:",
+        "    - shared-config",
+        "---",
+        "Work on {{ issue.identifier }}."
+      ].join("\n"),
+      "utf8"
+    );
+    const { config } = await loadServiceConfig(workflow);
+    const candidate = {
+      ...issue(),
+      labels: [
+        "repo:frontend",
+        "repo:backend",
+        "repo:other-org/lib",
+        "area:hero",
+        "repo:bad name",
+        "repo:frontend"
+      ]
+    };
+
+    const selected = selectRepositoriesForIssue(config, candidate);
+
+    expect(selected.map((repo) => `${repo.owner}/${repo.name}`)).toEqual([
+      "metyatech/frontend",
+      "metyatech/backend",
+      "other-org/lib",
+      "metyatech/shared-config"
+    ]);
+    expect(selected[0]?.url).toBe("https://github.com/metyatech/frontend.git");
+  });
+
+  it("renders the prompt with the repos array provided to renderPrompt", async () => {
+    const repos = [
+      {
+        name: "frontend",
+        path: "/tmp/work/frontend",
+        url: "https://github.com/metyatech/frontend.git",
+        created_now: true
+      }
+    ];
+    const rendered = await renderPrompt(
+      "Repos: {% for r in repos %}{{ r.name }}={{ r.path }}{% endfor %}",
+      issue(),
+      null,
+      repos
+    );
+    expect(rendered).toBe("Repos: frontend=/tmp/work/frontend");
   });
 });
 
