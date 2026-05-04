@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+try {
+  process.loadEnvFile();
+} catch (error) {
+  // ignore missing .env file
+}
+
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
 import { CodexRunner } from "./codex-runner.js";
