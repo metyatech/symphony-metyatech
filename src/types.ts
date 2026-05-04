@@ -47,11 +47,12 @@ export interface ServiceConfig {
     kind: "linear" | null;
     endpoint: string;
     api_key: string | null;
-    project_slug: string | null;
+    team: string | null;
     active_states: string[];
     terminal_states: string[];
   };
   polling: { interval_ms: number };
+  server: { port: number | null };
   workspace: { root: string };
   repositories: RepositoriesConfig;
   hooks: {

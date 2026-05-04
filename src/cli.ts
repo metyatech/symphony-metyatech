@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 try {
   process.loadEnvFile();
-} catch (error) {
+} catch {
   // ignore missing .env file
 }
 
 import { Command } from "commander";
-import { readFile } from "node:fs/promises";
+import { unlinkSync } from "node:fs";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createDashboardApi } from "./api.js";
 import { CodexRunner } from "./codex-runner.js";
 import { JsonLogger } from "./logger.js";
 import { Orchestrator } from "./orchestrator.js";
@@ -66,6 +69,47 @@ try {
     process.exit(0);
   }
   const orchestratorRef: { current: Orchestrator | null } = { current: null };
+  const workspaceRoot = loaded.config.workspace.root;
+  const pidFile = join(workspaceRoot, ".symphony.pid");
+
+  await mkdir(workspaceRoot, { recursive: true });
+
+  let pidFileExists = false;
+  try {
+    await access(pidFile);
+    pidFileExists = true;
+  } catch {
+    // pid file does not exist yet
+  }
+
+  if (pidFileExists) {
+    const existingPid = (await readFile(pidFile, "utf8")).trim();
+    let isRunning = false;
+    try {
+      process.kill(Number(existingPid), 0);
+      isRunning = true;
+    } catch {
+      // stale pid file from a previous crash
+    }
+    if (isRunning) {
+      logger.error("startup_failed", {
+        error: `Another instance of Symphony is already running for this workspace (PID: ${existingPid})`
+      });
+      process.exit(1);
+    }
+  }
+
+  await writeFile(pidFile, String(process.pid), "utf8");
+
+  const removePidFile = (): void => {
+    try {
+      unlinkSync(pidFile);
+    } catch {
+      // ignore cleanup errors
+    }
+  };
+  process.on("exit", removePidFile);
+
   const tracker = new LinearClient(() => orchestratorRef.current?.getConfig() ?? loaded.config);
   const workspaceManager = new WorkspaceManager(
     () => orchestratorRef.current?.getConfig() ?? loaded.config,
@@ -85,12 +129,38 @@ try {
       new CodexRunner(
         () => currentOrchestrator().getConfig(),
         () => currentOrchestrator().getPromptTemplate(),
-        logger
+        logger,
+        tracker
       ),
     logger
   );
   orchestratorRef.current = orchestrator;
-  const stop = () => void orchestrator.stop().then(() => process.exit(0));
+
+  const stateFile = join(workspaceRoot, "orchestrator_state.json");
+  await orchestrator.loadState(stateFile);
+
+  // Auto-save state periodically
+  setInterval(() => {
+    orchestrator.saveState(stateFile).catch(() => {});
+  }, 10000);
+
+  let server: any = null;
+  if (loaded.config.server.port !== null) {
+    const apiApp = createDashboardApi(orchestrator);
+    const port = loaded.config.server.port;
+    server = apiApp.listen(port, () => {
+      logger.info("dashboard_api_started", { port });
+    });
+  }
+
+  const stop = () => {
+    logger.info("service_stopping", {});
+    if (server) server.close();
+    void orchestrator
+      .stop()
+      .then(() => orchestrator.saveState(stateFile))
+      .then(() => process.exit(0));
+  };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   await orchestrator.start();

@@ -16,13 +16,13 @@ describe("workflow loading", () => {
     const workflow = path.join(dir, "WORKFLOW.md");
     await writeFile(
       workflow,
-      "---\ntracker:\n  kind: linear\n  project_slug: DEMO\nworkspace:\n  root: work\n---\nHello {{ issue.identifier }}\n",
+      "---\ntracker:\n  kind: linear\n  team: DEMO\nworkspace:\n  root: work\n---\nHello {{ issue.identifier }}\n",
       "utf8"
     );
 
     const loaded = await loadWorkflow(workflow);
 
-    expect(loaded.config.tracker).toEqual({ kind: "linear", project_slug: "DEMO" });
+    expect(loaded.config.tracker).toEqual({ kind: "linear", team: "DEMO" });
     expect(loaded.prompt_template).toBe("Hello {{ issue.identifier }}");
   });
 
@@ -32,7 +32,7 @@ describe("workflow loading", () => {
     process.env.SYMPHONY_TEST_LINEAR_KEY = "lin_test";
     await writeFile(
       workflow,
-      "---\ntracker:\n  kind: linear\n  api_key: $SYMPHONY_TEST_LINEAR_KEY\n  project_slug: DEMO\nworkspace:\n  root: work\n---\n",
+      "---\ntracker:\n  kind: linear\n  api_key: $SYMPHONY_TEST_LINEAR_KEY\n  team: DEMO\nworkspace:\n  root: work\n---\n",
       "utf8"
     );
 
@@ -46,11 +46,7 @@ describe("workflow loading", () => {
   it("requires tracker.kind for dispatch validation", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
     const workflow = path.join(dir, "WORKFLOW.md");
-    await writeFile(
-      workflow,
-      "---\ntracker:\n  api_key: literal\n  project_slug: DEMO\n---\n",
-      "utf8"
-    );
+    await writeFile(workflow, "---\ntracker:\n  api_key: literal\n  team: DEMO\n---\n", "utf8");
 
     const { config } = await loadServiceConfig(workflow);
 
@@ -72,7 +68,7 @@ describe("workflow loading", () => {
         "tracker:",
         "  kind: linear",
         "  api_key: x",
-        "  project_slug: DEMO",
+        "  team: DEMO",
         "repositories:",
         "  owner: metyatech",
         "  default:",

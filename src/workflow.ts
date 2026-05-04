@@ -88,6 +88,7 @@ export function resolveServiceConfig(
   const workflowDir = path.dirname(path.resolve(workflowPath));
   const tracker = getRecord(raw.tracker);
   const polling = getRecord(raw.polling);
+  const server = getRecord(raw.server);
   const workspace = getRecord(raw.workspace);
   const hooks = getRecord(raw.hooks);
   const agent = getRecord(raw.agent);
@@ -117,7 +118,7 @@ export function resolveServiceConfig(
         getString(tracker.endpoint, "https://api.linear.app/graphql") ??
         "https://api.linear.app/graphql",
       api_key: apiKey === "" ? null : apiKey,
-      project_slug: getString(tracker.project_slug, null),
+      team: getString(tracker.team, null),
       active_states: getStringArray(tracker.active_states, DEFAULT_ACTIVE_STATES),
       terminal_states: getStringArray(tracker.terminal_states, DEFAULT_TERMINAL_STATES)
     },
@@ -136,13 +137,16 @@ export function resolveServiceConfig(
       before_remove: getString(hooks.before_remove, null),
       timeout_ms: getInteger(hooks.timeout_ms, 60000)
     },
-    agent: {
-      max_concurrent_agents: getInteger(agent.max_concurrent_agents, 10),
-      max_turns: getInteger(agent.max_turns, 20),
-      max_retry_backoff_ms: getInteger(agent.max_retry_backoff_ms, 300000),
-      max_concurrent_agents_by_state: byState
-    },
-    codex: {
+      agent: {
+        max_concurrent_agents: getInteger(agent.max_concurrent_agents, 10),
+        max_turns: getInteger(agent.max_turns, 20),
+        max_retry_backoff_ms: getInteger(agent.max_retry_backoff_ms, 300000),
+        max_concurrent_agents_by_state: byState
+      },
+      server: {
+        port: getInteger(server.port, 3000) || null
+      },
+      codex: {
       command: getString(codex.command, "codex app-server") ?? "codex app-server",
       approval_policy: codex.approval_policy,
       thread_sandbox: codex.thread_sandbox,
@@ -159,10 +163,10 @@ export function validateDispatchConfig(config: ServiceConfig): void {
     throw new SymphonyError("config_validation_error", "tracker.kind must be linear");
   if (!config.tracker.api_key)
     throw new SymphonyError("config_validation_error", "tracker.api_key is required for dispatch");
-  if (!config.tracker.project_slug)
+  if (!config.tracker.team)
     throw new SymphonyError(
       "config_validation_error",
-      "tracker.project_slug is required for Linear dispatch"
+      "tracker.team is required for Linear dispatch"
     );
   if (!config.codex.command.trim())
     throw new SymphonyError("config_validation_error", "codex.command must be present");

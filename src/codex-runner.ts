@@ -13,6 +13,7 @@ import type {
   RunResult,
   ServiceConfig
 } from "./types.js";
+import type { IssueTrackerClient } from "./tracker.js";
 
 export interface AgentRunner {
   run(
@@ -60,7 +61,8 @@ export class CodexRunner implements AgentRunner {
   constructor(
     private readonly getConfig: () => ServiceConfig,
     private readonly getPromptTemplate: () => string,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly tracker: IssueTrackerClient
   ) {}
 
   async run(
@@ -162,8 +164,22 @@ export class CodexRunner implements AgentRunner {
     const turnResponse = await this.sendRequest("turn/start", {
       threadId: this.currentThreadId,
       cwd: workspacePath,
-      input: prompt,
-      sandboxPolicy: config.codex.turn_sandbox_policy
+      input: [{ type: "text", text: prompt }],
+      sandboxPolicy: config.codex.turn_sandbox_policy,
+      clientSideTools: [
+        {
+          name: "linear_graphql",
+          description: "Execute a GraphQL query or mutation against the Linear API.",
+          parameters: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "The GraphQL query or mutation string" },
+              variables: { type: "object", description: "Variables for the GraphQL query" }
+            },
+            required: ["query"]
+          }
+        }
+      ]
     });
     this.currentTurnId = extractId(turnResponse, ["turnId", "id"], ["turn"]);
     if (!this.currentTurnId)
@@ -262,6 +278,30 @@ export class CodexRunner implements AgentRunner {
 
     const method = typeof parsed.method === "string" ? parsed.method : "other_message";
     const params = getRecord(parsed.params);
+
+    if (method === "clientSideToolCall") {
+      const msgId =
+        typeof parsed.id === "number" || typeof parsed.id === "string" ? parsed.id : null;
+      const toolName = typeof params.name === "string" ? params.name : "";
+      const args = getRecord(params.args || params.parameters);
+
+      if (toolName === "linear_graphql" && msgId !== null) {
+        const query = typeof args.query === "string" ? args.query : "";
+        const variables = getRecord(args.variables || {});
+        this.tracker
+          .executeGraphQL(query, variables)
+          .then((result) => {
+            this.requireChild().stdin.write(`${JSON.stringify({ id: msgId, result })}\n`);
+          })
+          .catch((err) => {
+            this.requireChild().stdin.write(
+              `${JSON.stringify({ id: msgId, error: messageFromUnknown(err) })}\n`
+            );
+          });
+      }
+      return;
+    }
+
     const usage = readUsage(params) ?? readUsage(parsed);
     this.emitSession(
       method,

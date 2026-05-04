@@ -1,4 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { messageFromUnknown } from "./errors.js";
 import {
   isActiveIssue,
@@ -51,6 +52,66 @@ export class Orchestrator {
 
   getConfig(): ServiceConfig {
     return this.config;
+  }
+
+  async saveState(filePath: string): Promise<void> {
+    try {
+      const stateObj = {
+        claimed: Array.from(this.state.claimed),
+        completed: Array.from(this.state.completed),
+        retry_attempts: Array.from(this.state.retry_attempts.entries()).map(([id, entry]) => [
+          id,
+          { ...entry, timer_handle: null }
+        ]),
+        codex_totals: this.state.codex_totals,
+        codex_rate_limits: this.state.codex_rate_limits
+      };
+      await writeFile(filePath, JSON.stringify(stateObj, null, 2), "utf8");
+    } catch (error) {
+      this.logger.error("save_state_failed", { error: messageFromUnknown(error) });
+    }
+  }
+
+  async loadState(filePath: string): Promise<void> {
+    try {
+      const content = await readFile(filePath, "utf8");
+      const stateObj = JSON.parse(content) as {
+        claimed?: string[];
+        completed?: string[];
+        retry_attempts?: Array<[string, RetryEntry]>;
+        codex_totals?: OrchestratorState["codex_totals"];
+        codex_rate_limits?: unknown;
+      };
+
+      if (Array.isArray(stateObj.claimed)) {
+        this.state.claimed = new Set(stateObj.claimed);
+      }
+      if (Array.isArray(stateObj.completed)) {
+        this.state.completed = new Set(stateObj.completed);
+      }
+      if (Array.isArray(stateObj.retry_attempts)) {
+        this.state.retry_attempts = new Map();
+        for (const [id, entry] of stateObj.retry_attempts) {
+          const delayMs = Math.max(0, entry.due_at_ms - Date.now());
+          const newEntry: RetryEntry = {
+            ...entry,
+            timer_handle: setTimeout(() => void this.retry(id), delayMs)
+          };
+          this.state.retry_attempts.set(id, newEntry);
+        }
+      }
+      if (stateObj.codex_totals) {
+        this.state.codex_totals = stateObj.codex_totals;
+      }
+      if (stateObj.codex_rate_limits !== undefined) {
+        this.state.codex_rate_limits = stateObj.codex_rate_limits;
+      }
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code !== "ENOENT") {
+        this.logger.error("load_state_failed", { error: messageFromUnknown(error) });
+      }
+    }
   }
 
   getPromptTemplate(): string {

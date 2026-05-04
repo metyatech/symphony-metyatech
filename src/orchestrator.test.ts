@@ -15,7 +15,7 @@ describe("orchestrator", () => {
     const workflowPath = path.join(root, "WORKFLOW.md");
     await writeFile(
       workflowPath,
-      "---\ntracker:\n  kind: linear\n  api_key: x\n  project_slug: P\nagent:\n  max_concurrent_agents: 1\n---\nDo {{ issue.identifier }}",
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: P\nagent:\n  max_concurrent_agents: 1\n---\nDo {{ issue.identifier }}",
       "utf8"
     );
     const config = configFor(root);
@@ -46,7 +46,7 @@ describe("orchestrator", () => {
     const workflowPath = path.join(root, "WORKFLOW.md");
     await writeFile(
       workflowPath,
-      "---\ntracker:\n  kind: linear\n  api_key: x\n  project_slug: P\n---\nDo {{ issue.identifier }}",
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: P\n---\nDo {{ issue.identifier }}",
       "utf8"
     );
     const config = configFor(root);
@@ -74,7 +74,7 @@ describe("orchestrator", () => {
     const workflowPath = path.join(root, "WORKFLOW.md");
     await writeFile(
       workflowPath,
-      "---\ntracker:\n  kind: linear\n  api_key: x\n  project_slug: P\nagent:\n  max_concurrent_agents: 1\n  max_turns: 2\n---\nDo {{ issue.identifier }}",
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: P\nagent:\n  max_concurrent_agents: 1\n  max_turns: 2\n---\nDo {{ issue.identifier }}",
       "utf8"
     );
     const config = configFor(root);
@@ -142,7 +142,7 @@ function configFor(root: string): ServiceConfig {
       kind: "linear",
       endpoint: "x",
       api_key: "x",
-      project_slug: "P",
+      team: "P",
       active_states: ["Todo"],
       terminal_states: ["Done"]
     },

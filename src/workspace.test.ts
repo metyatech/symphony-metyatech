@@ -239,7 +239,7 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
       kind: "linear",
       endpoint: "https://api.linear.app/graphql",
       api_key: "x",
-      project_slug: "P",
+      team: "P",
       active_states: ["Todo"],
       terminal_states: ["Done"]
     },

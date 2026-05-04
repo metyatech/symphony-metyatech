@@ -6,6 +6,9 @@ export interface IssueTrackerClient {
   fetchCandidateIssues(): Promise<Issue[]>;
   fetchIssueStates(issueIds: string[]): Promise<Issue[]>;
   fetchTerminalIssues(): Promise<Issue[]>;
+  executeGraphQL(query: string, variables: Record<string, unknown>): Promise<unknown>;
+  addComment(issueId: string, body: string): Promise<void>;
+  updateIssueState(issueId: string, stateId: string): Promise<void>;
 }
 
 export class LinearClient implements IssueTrackerClient {
@@ -17,7 +20,7 @@ export class LinearClient implements IssueTrackerClient {
 
   async fetchIssueStates(issueIds: string[]): Promise<Issue[]> {
     if (issueIds.length === 0) return [];
-    const query = `query SymphonyIssues($ids: [String!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority state { name } branchName url labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
+    const query = `query SymphonyIssues($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority state { name } branchName url labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
     return this.executeIssueQuery(query, { ids: issueIds });
   }
 
@@ -26,17 +29,14 @@ export class LinearClient implements IssueTrackerClient {
   }
 
   private async queryIssues(states: string[]): Promise<Issue[]> {
-    const query = `query SymphonyIssues($projectSlug: String!, $states: [String!]!) { issues(filter: { project: { slug: { eq: $projectSlug } }, state: { name: { in: $states } } }) { nodes { id identifier title description priority state { name } branchName url labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
+    const query = `query SymphonyIssues($teamKey: String!, $states: [String!]!) { issues(filter: { team: { key: { eq: $teamKey } }, state: { name: { in: $states } } }) { nodes { id identifier title description priority state { name } branchName url labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
     return this.executeIssueQuery(query, {
-      projectSlug: this.getConfig().tracker.project_slug,
+      teamKey: this.getConfig().tracker.team,
       states
     });
   }
 
-  private async executeIssueQuery(
-    query: string,
-    variables: Record<string, unknown>
-  ): Promise<Issue[]> {
+  async executeGraphQL(query: string, variables: Record<string, unknown>): Promise<unknown> {
     const config = this.getConfig();
     if (!config.tracker.api_key)
       throw new SymphonyError("tracker_error", "Linear API key is missing");
@@ -50,10 +50,30 @@ export class LinearClient implements IssueTrackerClient {
         "tracker_error",
         `Linear request failed with HTTP ${response.status}`
       );
-    const body = (await response.json()) as LinearResponse;
+    const body = (await response.json()) as { data?: unknown; errors?: Array<{ message: string }> };
     if (body.errors?.length)
       throw new SymphonyError("tracker_error", body.errors.map((item) => item.message).join("; "));
-    return (body.data?.issues?.nodes ?? [])
+    return body.data;
+  }
+
+  async addComment(issueId: string, body: string): Promise<void> {
+    const query = `mutation AddComment($issueId: String!, $body: String!) { commentCreate(input: { issueId: $issueId, body: $body }) { success } }`;
+    await this.executeGraphQL(query, { issueId, body });
+  }
+
+  async updateIssueState(issueId: string, stateId: string): Promise<void> {
+    const query = `mutation UpdateIssueState($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }`;
+    await this.executeGraphQL(query, { id: issueId, stateId });
+  }
+
+  private async executeIssueQuery(
+    query: string,
+    variables: Record<string, unknown>
+  ): Promise<Issue[]> {
+    const data = (await this.executeGraphQL(query, variables)) as {
+      issues?: { nodes?: LinearIssue[] };
+    };
+    return (data?.issues?.nodes ?? [])
       .map(normalizeLinearIssue)
       .filter((issue): issue is Issue => issue !== null);
   }
@@ -90,11 +110,6 @@ export function passesBlockerRule(issue: Issue, config: ServiceConfig): boolean 
   return issue.blocked_by.every(
     (blocker) => blocker.state !== null && terminal.has(normalizeState(blocker.state))
   );
-}
-
-interface LinearResponse {
-  data?: { issues?: { nodes?: LinearIssue[] } };
-  errors?: Array<{ message: string }>;
 }
 
 interface LinearIssue {

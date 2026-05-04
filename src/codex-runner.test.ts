@@ -93,7 +93,7 @@ function configFor(root: string): ServiceConfig {
       kind: "linear",
       endpoint: "x",
       api_key: "x",
-      project_slug: "P",
+      team: "P",
       active_states: ["Todo"],
       terminal_states: ["Done"]
     },
