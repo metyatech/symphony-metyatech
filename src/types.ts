@@ -65,6 +65,7 @@ export interface ServiceConfig {
   agent: {
     max_concurrent_agents: number;
     max_turns: number;
+    max_retries: number;
     max_retry_backoff_ms: number;
     max_concurrent_agents_by_state: Map<string, number>;
   };
