@@ -8,6 +8,7 @@ try {
 import { Command } from "commander";
 import { unlinkSync } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import type { Server } from "node:http";
 import { join } from "node:path";
 import { createDashboardApi } from "./api.js";
 import { CodexRunner } from "./codex-runner.js";
@@ -144,7 +145,7 @@ try {
     orchestrator.saveState(stateFile).catch(() => {});
   }, 10000);
 
-  let server: any = null;
+  let server: Server | null = null;
   if (loaded.config.server.port !== null) {
     const apiApp = createDashboardApi(orchestrator);
     const port = loaded.config.server.port;
@@ -155,7 +156,7 @@ try {
 
   const stop = () => {
     logger.info("service_stopping", {});
-    if (server) server.close();
+    server?.close();
     void orchestrator
       .stop()
       .then(() => orchestrator.saveState(stateFile))
