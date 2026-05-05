@@ -259,7 +259,7 @@ export class Orchestrator {
     delayMs: number,
     error: string | null
   ): void {
-    if (attempt > this.config.agent.max_turns) {
+    if (attempt > this.config.agent.max_retries) {
       this.logger.error("max_retries_exceeded", { issue: issue.identifier, attempt });
       this.release(issue.id);
       return;
