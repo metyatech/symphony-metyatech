@@ -259,6 +259,11 @@ export class Orchestrator {
     delayMs: number,
     error: string | null
   ): void {
+    if (attempt > this.config.agent.max_turns) {
+      this.logger.error("max_retries_exceeded", { issue: issue.identifier, attempt });
+      this.release(issue.id);
+      return;
+    }
     const existing = this.state.retry_attempts.get(issue.id);
     if (existing?.timer_handle) clearTimeout(existing.timer_handle);
     const entry: RetryEntry = {
@@ -340,7 +345,12 @@ export class Orchestrator {
       if (Date.now() - base > this.config.codex.stall_timeout_ms) {
         await running.worker.cancel("stalled");
         this.state.running.delete(issueId);
-        this.scheduleRetry(running.issue, 1, 10000, "stalled");
+        
+        const existingAttempt = this.state.retry_attempts.get(issueId)?.attempt ?? 0;
+        const nextAttempt = existingAttempt + 1;
+        const delay = Math.min(10000 * 2 ** (nextAttempt - 1), this.config.agent.max_retry_backoff_ms);
+        
+        this.scheduleRetry(running.issue, nextAttempt, delay, "stalled");
       }
     }
   }
