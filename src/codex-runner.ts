@@ -140,13 +140,30 @@ export class CodexRunner implements AgentRunner {
       )
     );
 
-    await this.sendRequest("initialize", { clientInfo: { name: "symphony", version: "0.1.0" } });
+    await this.sendRequest("initialize", {
+      clientInfo: { name: "symphony", version: "0.1.0" },
+      capabilities: { experimentalApi: true }
+    });
     this.sendNotification("initialized", {});
     const threadResponse = await this.sendRequest("thread/start", {
       cwd: workspacePath,
       title: `${issue.identifier}: ${issue.title}`,
       approvalPolicy: config.codex.approval_policy,
-      sandbox: config.codex.thread_sandbox
+      sandbox: config.codex.thread_sandbox,
+      dynamicTools: [
+        {
+          name: "linear_graphql",
+          description: "Execute a GraphQL query or mutation against the Linear API.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              query: { type: "string", description: "The GraphQL query or mutation string" },
+              variables: { type: "object", description: "Variables for the GraphQL query" }
+            },
+            required: ["query"]
+          }
+        }
+      ]
     });
     this.currentThreadId = extractId(threadResponse, ["threadId", "id"], ["thread"]);
     if (!this.currentThreadId)
@@ -165,21 +182,7 @@ export class CodexRunner implements AgentRunner {
       threadId: this.currentThreadId,
       cwd: workspacePath,
       input: [{ type: "text", text: prompt }],
-      sandboxPolicy: config.codex.turn_sandbox_policy,
-      clientSideTools: [
-        {
-          name: "linear_graphql",
-          description: "Execute a GraphQL query or mutation against the Linear API.",
-          parameters: {
-            type: "object",
-            properties: {
-              query: { type: "string", description: "The GraphQL query or mutation string" },
-              variables: { type: "object", description: "Variables for the GraphQL query" }
-            },
-            required: ["query"]
-          }
-        }
-      ]
+      sandboxPolicy: config.codex.turn_sandbox_policy
     });
     this.currentTurnId = extractId(turnResponse, ["turnId", "id"], ["turn"]);
     if (!this.currentTurnId)
@@ -279,25 +282,26 @@ export class CodexRunner implements AgentRunner {
     const method = typeof parsed.method === "string" ? parsed.method : "other_message";
     const params = getRecord(parsed.params);
 
+    if (method === "item/tool/call") {
+      const msgId =
+        typeof parsed.id === "number" || typeof parsed.id === "string" ? parsed.id : null;
+      const toolName = getToolName(params.tool);
+      const args = readToolArguments(params.arguments);
+
+      if (toolName === "linear_graphql" && msgId !== null) {
+        this.handleLinearGraphQLToolCall(msgId, args, "dynamic");
+      }
+      return;
+    }
+
     if (method === "clientSideToolCall") {
       const msgId =
         typeof parsed.id === "number" || typeof parsed.id === "string" ? parsed.id : null;
       const toolName = typeof params.name === "string" ? params.name : "";
-      const args = getRecord(params.args || params.parameters);
+      const args = readToolArguments(params.args ?? params.parameters);
 
       if (toolName === "linear_graphql" && msgId !== null) {
-        const query = typeof args.query === "string" ? args.query : "";
-        const variables = getRecord(args.variables || {});
-        this.tracker
-          .executeGraphQL(query, variables)
-          .then((result) => {
-            this.requireChild().stdin.write(`${JSON.stringify({ id: msgId, result })}\n`);
-          })
-          .catch((err) => {
-            this.requireChild().stdin.write(
-              `${JSON.stringify({ id: msgId, error: messageFromUnknown(err) })}\n`
-            );
-          });
+        this.handleLinearGraphQLToolCall(msgId, args, "legacy");
       }
       return;
     }
@@ -380,6 +384,42 @@ export class CodexRunner implements AgentRunner {
     this.failTurn(error);
   }
 
+  private handleLinearGraphQLToolCall(
+    msgId: number | string,
+    args: Record<string, unknown>,
+    protocol: "dynamic" | "legacy"
+  ): void {
+    const query = typeof args.query === "string" ? args.query : "";
+    const variables = getRecord(args.variables || {});
+    this.tracker
+      .executeGraphQL(query, variables)
+      .then((result) => {
+        if (protocol === "dynamic") {
+          this.writeJsonRpcResponse(msgId, {
+            success: true,
+            contentItems: [{ type: "inputText", text: JSON.stringify(result) }]
+          });
+          return;
+        }
+        this.writeJsonRpcResponse(msgId, result);
+      })
+      .catch((err) => {
+        const errorText = redactSecrets(messageFromUnknown(err));
+        if (protocol === "dynamic") {
+          this.writeJsonRpcResponse(msgId, {
+            success: false,
+            contentItems: [{ type: "inputText", text: errorText }]
+          });
+          return;
+        }
+        this.requireChild().stdin.write(`${JSON.stringify({ id: msgId, error: errorText })}\n`);
+      });
+  }
+
+  private writeJsonRpcResponse(msgId: number | string, result: unknown): void {
+    this.requireChild().stdin.write(`${JSON.stringify({ id: msgId, result })}\n`);
+  }
+
   private requireChild(): ChildProcessWithoutNullStreams {
     if (!this.child)
       throw new SymphonyError("codex_runner_error", "codex app-server is not running");
@@ -421,6 +461,24 @@ function extractId(
     for (const key of directKeys) if (typeof nested[key] === "string") return nested[key];
   }
   return null;
+}
+
+function getToolName(tool: unknown): string {
+  if (typeof tool === "string") return tool;
+  const record = getRecord(tool);
+  return typeof record.name === "string" ? record.name : "";
+}
+
+function readToolArguments(value: unknown): Record<string, unknown> {
+  if (typeof value === "string") {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return getRecord(parsed);
+    } catch {
+      return {};
+    }
+  }
+  return getRecord(value);
 }
 
 function getRecord(value: unknown): Record<string, unknown> {
