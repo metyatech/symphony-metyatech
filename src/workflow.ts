@@ -137,23 +137,23 @@ export function resolveServiceConfig(
       before_remove: getString(hooks.before_remove, null),
       timeout_ms: getInteger(hooks.timeout_ms, 60000)
     },
-      agent: {
-        max_concurrent_agents: getInteger(agent.max_concurrent_agents, 10),
-        max_turns: getInteger(agent.max_turns, 20),
-        max_retries: getInteger(agent.max_retries, 5),
-        max_retry_backoff_ms: getInteger(agent.max_retry_backoff_ms, 300000),
-        max_concurrent_agents_by_state: byState
-      },
-      server: {
-        port: getInteger(server.port, 3000) || null
-      },
-      codex: {
+    agent: {
+      max_concurrent_agents: getInteger(agent.max_concurrent_agents, 10),
+      max_turns: getInteger(agent.max_turns, 20),
+      max_retries: getInteger(agent.max_retries, 5),
+      max_retry_backoff_ms: getInteger(agent.max_retry_backoff_ms, 300000),
+      max_concurrent_agents_by_state: byState
+    },
+    server: {
+      port: getInteger(server.port, 3000) || null
+    },
+    codex: {
       command: getString(codex.command, "codex app-server") ?? "codex app-server",
       approval_policy: codex.approval_policy,
       thread_sandbox: codex.thread_sandbox,
-        turn_sandbox_policy: codex.turn_sandbox_policy,
-        turn_timeout_ms: getInteger(codex.turn_timeout_ms, 21600000),
-        read_timeout_ms: getInteger(codex.read_timeout_ms, 5000),
+      turn_sandbox_policy: codex.turn_sandbox_policy,
+      turn_timeout_ms: getInteger(codex.turn_timeout_ms, 21600000),
+      read_timeout_ms: getInteger(codex.read_timeout_ms, 5000),
       stall_timeout_ms: getInteger(codex.stall_timeout_ms, 300000)
     }
   };
