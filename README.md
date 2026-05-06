@@ -26,6 +26,7 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: DEMO
+  trigger_label: symphony-ready
 workspace:
   root: ./.symphony-workspaces
 codex:
@@ -55,9 +56,11 @@ LINEAR_API_KEY=lin_api_xxx symphony --workflow ./WORKFLOW.md --check --json
 
 ## Configuration
 
-`WORKFLOW.md` supports optional YAML front matter and a strict Liquid-compatible prompt body. Unknown template variables and filters fail the affected run attempt. Relative `workspace.root` values resolve relative to the workflow file directory, and `$VAR_NAME` indirection is resolved only where the spec allows it.
+`WORKFLOW.md` supports optional YAML front matter and a strict Liquid-compatible prompt body. Unknown template variables and filters fail the affected run attempt. Relative `workspace.root` values resolve relative to the workflow file directory, and `$VAR_NAME` indirection is resolved only where the spec allows it. If `workspace.root` is absent, top-level `workspaces_root` is accepted as a workflow-directory-relative compatibility alias; `workspace.root` always takes precedence when both are present.
 
-Required dispatch fields are `tracker.kind`, `tracker.api_key`, `tracker.project_slug`, and `codex.command`. Defaults follow the upstream Symphony specification for polling interval, active and terminal states, hook timeout, concurrency, retry backoff, and Codex timeouts.
+Required dispatch fields are `tracker.kind`, `tracker.api_key`, `tracker.team`, and `codex.command`. `tracker.project_slug` and `tracker.trigger_label` are optional scoping fields. Defaults follow the upstream Symphony specification for polling interval, active and terminal states, hook timeout, concurrency, retry backoff, and Codex timeouts.
+
+Linear issue scope is controlled by `tracker.team`, `tracker.active_states`, optional `tracker.project_slug`, and optional `tracker.trigger_label`. When `project_slug` or `trigger_label` is configured, Symphony applies both Linear query filters and local eligibility checks so issues outside the configured project or missing the trigger label are not dispatched or continued. Slugs and labels are normalized case-insensitively.
 
 ## Multi-Repository Workspaces
 
@@ -81,6 +84,14 @@ Repositories are selected from issue labels matching `label_prefix` and from
 Selected repos are cloned into `<workspace>/<name>/` on first run and reused
 unchanged on subsequent runs so the agent's branches and uncommitted edits
 survive across continuation turns.
+
+When `repositories.default` selects exactly one checkout, or labels select
+exactly one checkout, Codex starts with that checkout as its current working
+directory. When multiple repositories are selected, Codex keeps the issue
+workspace as its current working directory so every checkout remains visible as
+a sibling directory. If `repositories.required` is `true` and no labels or
+defaults select a repository, the run fails during workspace preparation before
+the Codex runner starts.
 
 The Liquid prompt template receives a `repos` array alongside `issue` and
 `attempt`, so a single template can address every selected repo:
