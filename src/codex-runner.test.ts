@@ -228,6 +228,8 @@ function configFor(root: string): ServiceConfig {
       endpoint: "x",
       api_key: "x",
       team: "P",
+      project_slug: null,
+      trigger_label: null,
       active_states: ["Todo"],
       terminal_states: ["Done"]
     },
@@ -279,6 +281,7 @@ function issue(): Issue {
     branch_name: null,
     url: null,
     labels: [],
+    project_slug: null,
     blocked_by: [],
     created_at: null,
     updated_at: null

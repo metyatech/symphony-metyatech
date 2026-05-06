@@ -14,6 +14,7 @@ export interface Issue {
   branch_name: string | null;
   url: string | null;
   labels: string[];
+  project_slug: string | null;
   blocked_by: BlockerRef[];
   created_at: string | null;
   updated_at: string | null;
@@ -48,6 +49,8 @@ export interface ServiceConfig {
     endpoint: string;
     api_key: string | null;
     team: string | null;
+    project_slug: string | null;
+    trigger_label: string | null;
     active_states: string[];
     terminal_states: string[];
   };

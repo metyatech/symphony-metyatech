@@ -1,5 +1,5 @@
 import { SymphonyError } from "./errors.js";
-import { normalizeState } from "./workflow.js";
+import { normalizeLabel, normalizeSlug, normalizeState } from "./workflow.js";
 import type { Issue, ServiceConfig } from "./types.js";
 
 export interface IssueTrackerClient {
@@ -20,7 +20,7 @@ export class LinearClient implements IssueTrackerClient {
 
   async fetchIssueStates(issueIds: string[]): Promise<Issue[]> {
     if (issueIds.length === 0) return [];
-    const query = `query SymphonyIssues($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority state { name } branchName url labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
+    const query = `query SymphonyIssues($ids: [ID!]!) { issues(filter: { id: { in: $ids } }) { nodes { id identifier title description priority state { name } branchName url project { slugId } labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
     return this.executeIssueQuery(query, { ids: issueIds });
   }
 
@@ -29,11 +29,27 @@ export class LinearClient implements IssueTrackerClient {
   }
 
   private async queryIssues(states: string[]): Promise<Issue[]> {
-    const query = `query SymphonyIssues($teamKey: String!, $states: [String!]!) { issues(filter: { team: { key: { eq: $teamKey } }, state: { name: { in: $states } } }) { nodes { id identifier title description priority state { name } branchName url labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
-    return this.executeIssueQuery(query, {
-      teamKey: this.getConfig().tracker.team,
+    const config = this.getConfig();
+    const variableDefinitions = ["$teamKey: String!", "$states: [String!]!"];
+    const filters = ["team: { key: { eq: $teamKey } }", "state: { name: { in: $states } }"];
+    const variables: Record<string, unknown> = {
+      teamKey: config.tracker.team,
       states
-    });
+    };
+    if (config.tracker.project_slug) {
+      variableDefinitions.push("$projectSlug: String!");
+      filters.push("project: { slugId: { eq: $projectSlug } }");
+      variables.projectSlug = config.tracker.project_slug;
+    }
+    if (config.tracker.trigger_label) {
+      variableDefinitions.push("$triggerLabel: String!");
+      filters.push("labels: { name: { eq: $triggerLabel } }");
+      variables.triggerLabel = config.tracker.trigger_label;
+    }
+    const query = `query SymphonyIssues(${variableDefinitions.join(", ")}) { issues(filter: { ${filters.join(", ")} }) { nodes { id identifier title description priority state { name } branchName url project { slugId } labels { nodes { name } } relations { nodes { type relatedIssue { id identifier state { name } } } } createdAt updatedAt } } }`;
+    return (await this.executeIssueQuery(query, variables)).filter((issue) =>
+      isIssueInTrackerScope(issue, config)
+    );
   }
 
   async executeGraphQL(query: string, variables: Record<string, unknown>): Promise<unknown> {
@@ -86,6 +102,22 @@ export function isActiveIssue(issue: Issue, config: ServiceConfig): boolean {
   return active.has(state) && !terminal.has(state);
 }
 
+export function isIssueInTrackerScope(issue: Issue, config: ServiceConfig): boolean {
+  if (
+    config.tracker.project_slug !== null &&
+    normalizeSlug(issue.project_slug) !== config.tracker.project_slug
+  ) {
+    return false;
+  }
+  if (
+    config.tracker.trigger_label !== null &&
+    !issue.labels.some((label) => normalizeLabel(label) === config.tracker.trigger_label)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function isTerminalIssue(issue: Issue, config: ServiceConfig): boolean {
   return new Set(config.tracker.terminal_states.map(normalizeState)).has(
     normalizeState(issue.state)
@@ -122,6 +154,7 @@ interface LinearIssue {
   branchName?: unknown;
   url?: unknown;
   labels?: { nodes?: Array<{ name?: unknown }> };
+  project?: { slugId?: unknown };
   relations?: {
     nodes?: Array<{
       type?: unknown;
@@ -152,6 +185,8 @@ function normalizeLinearIssue(input: LinearIssue): Issue | null {
     labels: (input.labels?.nodes ?? []).flatMap((label) =>
       typeof label.name === "string" ? [label.name.toLowerCase()] : []
     ),
+    project_slug:
+      typeof input.project?.slugId === "string" ? normalizeSlug(input.project.slugId) : null,
     blocked_by: (input.relations?.nodes ?? [])
       .filter((relation) => relation.type === "blocks")
       .map((relation) => ({

@@ -107,6 +107,7 @@ describe("workspace management", () => {
       branch_name: "fe/hero",
       url: "https://linear.app/x/FE-7",
       labels: ["repo:frontend-repo", "area:hero"],
+      project_slug: null,
       blocked_by: [],
       created_at: null,
       updated_at: null
@@ -220,6 +221,7 @@ function makeIssue(identifier: string, state = "Todo"): Issue {
     branch_name: null,
     url: null,
     labels: [],
+    project_slug: null,
     blocked_by: [],
     created_at: null,
     updated_at: null
@@ -240,10 +242,13 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
       endpoint: "https://api.linear.app/graphql",
       api_key: "x",
       team: "P",
+      project_slug: null,
+      trigger_label: null,
       active_states: ["Todo"],
       terminal_states: ["Done"]
     },
     polling: { interval_ms: 30000 },
+    server: { port: null },
     workspace: { root },
     repositories: {
       owner: null,
@@ -263,6 +268,7 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
     agent: {
       max_concurrent_agents: 10,
       max_turns: 20,
+      max_retries: 3,
       max_retry_backoff_ms: 300000,
       max_concurrent_agents_by_state: new Map()
     },

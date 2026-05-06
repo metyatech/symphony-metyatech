@@ -43,6 +43,59 @@ describe("workflow loading", () => {
     expect(() => validateDispatchConfig(config)).not.toThrow();
   });
 
+  it("uses top-level workspaces_root relative to WORKFLOW.md when workspace.root is absent", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: DEMO\nworkspaces_root: ./workspaces\n---\n",
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.workspace.root).toBe(path.resolve(dir, "workspaces"));
+  });
+
+  it("keeps workspace.root precedence over top-level workspaces_root", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      [
+        "---",
+        "tracker:",
+        "  kind: linear",
+        "  api_key: x",
+        "  team: DEMO",
+        "workspaces_root: ./workspaces",
+        "workspace:",
+        "  root: ./explicit-workspaces",
+        "---"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.workspace.root).toBe(path.resolve(dir, "explicit-workspaces"));
+  });
+
+  it("parses normalized tracker project slug and trigger label", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: DEMO\n  project_slug: ' Demo.Project '\n  trigger_label: ' Symphony Ready '\n---\n",
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.tracker.project_slug).toBe("demo.project");
+    expect(config.tracker.trigger_label).toBe("symphony ready");
+  });
+
   it("requires tracker.kind for dispatch validation", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
     const workflow = path.join(dir, "WORKFLOW.md");
@@ -132,6 +185,7 @@ function issue() {
     branch_name: null,
     url: null,
     labels: [],
+    project_slug: null,
     blocked_by: [],
     created_at: null,
     updated_at: null

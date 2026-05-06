@@ -108,6 +108,9 @@ export function resolveServiceConfig(
     const parsed = toPositiveInteger(value);
     if (parsed !== null) byState.set(normalizeState(state), parsed);
   }
+  const defaultWorkspaceRoot = path.join(os.tmpdir(), "symphony_workspaces");
+  const workspaceRoot =
+    getString(workspace.root, getString(raw.workspaces_root, null)) ?? defaultWorkspaceRoot;
 
   return {
     workflowPath: path.resolve(workflowPath),
@@ -119,15 +122,14 @@ export function resolveServiceConfig(
         "https://api.linear.app/graphql",
       api_key: apiKey === "" ? null : apiKey,
       team: getString(tracker.team, null),
+      project_slug: normalizeSlug(getString(tracker.project_slug, null)),
+      trigger_label: normalizeLabel(getString(tracker.trigger_label, null)),
       active_states: getStringArray(tracker.active_states, DEFAULT_ACTIVE_STATES),
       terminal_states: getStringArray(tracker.terminal_states, DEFAULT_TERMINAL_STATES)
     },
     polling: { interval_ms: getInteger(polling.interval_ms, 30000) },
     workspace: {
-      root: resolvePathValue(
-        getString(workspace.root, path.join(os.tmpdir(), "symphony_workspaces"))!,
-        workflowDir
-      )
+      root: resolvePathValue(workspaceRoot, workflowDir)
     },
     repositories: resolveRepositoriesConfig(repositories),
     hooks: {
@@ -289,6 +291,16 @@ function buildRepoUrl(cfg: RepositoriesConfig, owner: string, name: string): str
 
 export function normalizeState(value: string): string {
   return value.toLowerCase();
+}
+
+export function normalizeSlug(value: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLowerCase() : null;
+}
+
+export function normalizeLabel(value: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.toLowerCase() : null;
 }
 
 function resolveEnvReference(value: string): string {

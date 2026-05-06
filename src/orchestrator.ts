@@ -3,6 +3,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { messageFromUnknown } from "./errors.js";
 import {
   isActiveIssue,
+  isIssueInTrackerScope,
   isTerminalIssue,
   passesBlockerRule,
   sortCandidates,
@@ -205,7 +206,7 @@ export class Orchestrator {
       try {
         lastResult = await runner.run(
           currentIssue,
-          workspace.path,
+          runnerCwd(workspace.path, workspace.repositories),
           turn === 0 ? attempt : turn,
           (session) => {
             const current = this.state.running.get(issue.id);
@@ -222,7 +223,12 @@ export class Orchestrator {
       if (lastResult.status !== "succeeded") return lastResult;
       const refreshed = await this.tracker.fetchIssueStates([issue.id]);
       const nextIssue = refreshed.find((candidate) => candidate.id === issue.id);
-      if (!nextIssue || !isActiveIssue(nextIssue, this.config)) return lastResult;
+      if (
+        !nextIssue ||
+        !isActiveIssue(nextIssue, this.config) ||
+        !isIssueInTrackerScope(nextIssue, this.config)
+      )
+        return lastResult;
       currentIssue = nextIssue;
       const runningNow = this.state.running.get(issue.id);
       if (runningNow) runningNow.issue = nextIssue;
@@ -327,10 +333,10 @@ export class Orchestrator {
         await running.worker.cancel("issue terminal");
         await this.workspaceManager.removeWorkspace(issue);
         this.release(issueId);
-      } else if (isActiveIssue(issue, this.config)) {
+      } else if (isActiveIssue(issue, this.config) && isIssueInTrackerScope(issue, this.config)) {
         running.issue = issue;
       } else {
-        await running.worker.cancel("issue no longer active");
+        await running.worker.cancel("issue no longer active or in scope");
         this.release(issueId);
       }
     }
@@ -370,6 +376,7 @@ export class Orchestrator {
   private isEligible(issue: Issue, allowRetryClaim = false): boolean {
     if (!issue.id || !issue.identifier || !issue.title || !issue.state) return false;
     if (!isActiveIssue(issue, this.config)) return false;
+    if (!isIssueInTrackerScope(issue, this.config)) return false;
     if (this.state.running.has(issue.id)) return false;
     if (this.state.claimed.has(issue.id) && !allowRetryClaim) return false;
     if (!passesBlockerRule(issue, this.config)) return false;
@@ -419,4 +426,8 @@ export class Orchestrator {
     if (this.tickTimer) clearTimeout(this.tickTimer);
     this.tickTimer = setTimeout(() => void this.tick(), this.state.poll_interval_ms);
   }
+}
+
+function runnerCwd(workspacePath: string, repositories: { path: string }[]): string {
+  return repositories.length === 1 ? repositories[0]!.path : workspacePath;
 }
