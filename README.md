@@ -76,6 +76,9 @@ repositories:
   label_prefix: "repo:" # how repos are picked from issue labels
   default: [] # repos to always clone, e.g. ["shared-config"]
   required: false # set true to fail when no repos are selected
+  local:
+    prefer_existing: false # set true to use matching local checkouts first
+    roots: [] # directories whose immediate children are repo checkouts
 ```
 
 Repositories are selected from issue labels matching `label_prefix` and from
@@ -84,6 +87,28 @@ Repositories are selected from issue labels matching `label_prefix` and from
 Selected repos are cloned into `<workspace>/<name>/` on first run and reused
 unchanged on subsequent runs so the agent's branches and uncommitted edits
 survive across continuation turns.
+
+For a GHWS-style workspace where repositories already exist side by side, set
+`repositories.local.prefer_existing: true` and list the workspace roots to
+search. Symphony then checks each configured root for an immediate child whose
+directory name matches the selected repository name. If that child is a real Git
+checkout root, Symphony passes that existing checkout to Codex instead of
+cloning another copy into the issue workspace. When no matching local checkout
+exists, clone/reuse under the issue workspace still applies.
+
+```yaml
+repositories:
+  owner: metyatech
+  required: true
+  local:
+    prefer_existing: true
+    roots:
+      - . # relative to WORKFLOW.md
+```
+
+Local checkouts are not copied, linked, reset, or deleted by Symphony. Hook
+metadata reports them with `SYMPHONY_REPO_<NAME>_CREATED_NOW=false`, and
+workspace cleanup removes only the issue workspace directory.
 
 When `repositories.default` selects exactly one checkout, or labels select
 exactly one checkout, Codex starts with that checkout as its current working

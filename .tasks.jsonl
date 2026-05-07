@@ -1,3 +1,4 @@
 {"id":"snac3c1x","description":"Implement Symphony service specification","stage":"committed","createdAt":"2026-04-29T00:57:01.266Z","updatedAt":"2026-05-03T05:27:00.075Z","committedEventId":"2vCWROD1TTre0w3Q"}
 {"id":"VwXErvFv","description":"Add first-class multi-repo workspace support","stage":"committed","createdAt":"2026-05-03T05:44:43.847Z","updatedAt":"2026-05-03T07:03:28.889Z","committedEventId":"ED71GFrz8NUOdvID"}
 {"id":"vTGjfhZi","description":"Fix Symphony workflow scoping and workspace root handling","stage":"committed","createdAt":"2026-05-06T00:59:42.110Z","updatedAt":"2026-05-06T01:42:48.661Z","committedEventId":"Xyn0V7_C4OYniCae"}
+{"id":"vBVfEzE1","description":"Implement Symphony local repository checkout preference","stage":"committed","createdAt":"2026-05-06T02:49:22.775Z","updatedAt":"2026-05-07T14:49:39.120Z","committedEventId":"dLGmLAE61x2aFJdU"}
