@@ -85,6 +85,52 @@ describe("CodexRunner", () => {
     expect(result.status).toBe("succeeded");
     expect(result.error).toBeNull();
   });
+
+  it("allows a selected repository checkout outside the workspace root as runner cwd", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-runner-"));
+    const root = path.join(parent, "workspaces");
+    const localRepo = path.join(parent, "local", "frontend");
+    await import("node:fs/promises").then((fs) => fs.mkdir(localRepo, { recursive: true }));
+    const config = configFor(root);
+    const fakeServer = await writeFakeServer(parent, false);
+    config.codex.command = `node "${fakeServer}"`;
+
+    const result = await new CodexRunner(
+      () => config,
+      () => "Work on {{ issue.identifier }}",
+      new MemoryLogger(),
+      fakeTracker()
+    ).run(issue(), localRepo, null, () => undefined, [
+      {
+        name: "frontend",
+        path: localRepo,
+        url: "https://github.com/metyatech/frontend.git",
+        created_now: false
+      }
+    ]);
+
+    expect(result.status).toBe("succeeded");
+  });
+
+  it("rejects a runner cwd outside the workspace root when it is not a selected checkout", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-runner-"));
+    const root = path.join(parent, "workspaces");
+    const localRepo = path.join(parent, "local", "frontend");
+    await import("node:fs/promises").then((fs) => fs.mkdir(localRepo, { recursive: true }));
+    const config = configFor(root);
+    const fakeServer = await writeFakeServer(parent, false);
+    config.codex.command = `node "${fakeServer}"`;
+
+    const result = await new CodexRunner(
+      () => config,
+      () => "Work on {{ issue.identifier }}",
+      new MemoryLogger(),
+      fakeTracker()
+    ).run(issue(), localRepo, null, () => undefined, []);
+
+    expect(result.status).toBe("failed");
+    expect(result.error).toContain("Workspace path escapes root");
+  });
 });
 
 async function writeFakeServer(root: string, leakSecret: boolean): Promise<string> {
@@ -242,7 +288,8 @@ function configFor(root: string): ServiceConfig {
       protocol: "https",
       label_prefix: "repo:",
       default: [],
-      required: false
+      required: false,
+      local: { prefer_existing: false, roots: [] }
     },
     hooks: {
       after_create: null,

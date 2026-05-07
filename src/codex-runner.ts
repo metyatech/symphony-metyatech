@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { lstat, realpath } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { SymphonyError, messageFromUnknown } from "./errors.js";
 import { redactSecrets, sanitizedProcessEnv } from "./process-safety.js";
@@ -75,7 +76,7 @@ export class CodexRunner implements AgentRunner {
     const started = Date.now();
     const config = this.getConfig();
     try {
-      await ensureRealDirectoryInsideRoot(config.workspace.root, workspacePath);
+      await ensureAllowedRunnerCwd(config, workspacePath, repositories);
       const prompt = await renderPrompt(this.getPromptTemplate(), issue, attempt, repositories);
       await this.runAppServerTurn(config, workspacePath, prompt, issue, onSession);
       return {
@@ -435,6 +436,35 @@ export class CodexRunner implements AgentRunner {
     const exited = once(child, "exit").then(() => undefined);
     await Promise.race([exited, delay(1000).then(() => child.kill("SIGKILL"))]);
   }
+}
+
+async function ensureAllowedRunnerCwd(
+  config: ServiceConfig,
+  workspacePath: string,
+  repositories: RepoCheckout[]
+): Promise<void> {
+  try {
+    await ensureRealDirectoryInsideRoot(config.workspace.root, workspacePath);
+    return;
+  } catch (error) {
+    const workspaceReal = await realDirectoryPath(workspacePath);
+    for (const repo of repositories) {
+      const repoReal = await realDirectoryPath(repo.path);
+      if (repoReal === workspaceReal) return;
+    }
+    throw error;
+  }
+}
+
+async function realDirectoryPath(target: string): Promise<string> {
+  const stat = await lstat(target);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new SymphonyError(
+      "workspace_safety_error",
+      `Runner cwd is not a real directory: ${target}`
+    );
+  }
+  return realpath(target);
 }
 
 function readUsage(parsed: Record<string, unknown>): Usage | null {
