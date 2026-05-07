@@ -1,6 +1,8 @@
-import { access, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { MemoryLogger } from "./logger.js";
 import type { Issue, ServiceConfig } from "./types.js";
@@ -208,6 +210,88 @@ describe("workspace management", () => {
       restoreEnv("SYMPHONY_HOOK_MARKER", previous.marker);
     }
   });
+
+  it("prefers an existing local Git checkout over cloning into the issue workspace", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-local-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "local");
+    const localRepo = path.join(localRoot, "frontend");
+    await initGitRepo(localRepo);
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local = { prefer_existing: true, roots: [localRoot] };
+    const manager = new WorkspaceManager(() => config, new MemoryLogger());
+
+    const workspace = await manager.ensureWorkspace({
+      ...makeIssue("FE-10"),
+      labels: ["repo:frontend"]
+    });
+
+    expect(workspace.repositories).toHaveLength(1);
+    expect(workspace.repositories[0]).toMatchObject({
+      name: "frontend",
+      path: await realpath(localRepo),
+      url: "https://github.com/metyatech/frontend.git",
+      created_now: false
+    });
+    await expect(access(path.join(workspace.path, "frontend"))).rejects.toThrow();
+  });
+
+  it("falls back to cloning into the issue workspace when no local checkout exists", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-local-repos-"));
+    const root = path.join(parent, "workspaces");
+    const originRoot = path.join(parent, "origins");
+    const origin = path.join(originRoot, "metyatech", "frontend.git");
+    await initBareGitRepo(origin);
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.base_url = pathToFileURL(originRoot).href;
+    config.repositories.local = {
+      prefer_existing: true,
+      roots: [path.join(parent, "missing-local")]
+    };
+    const manager = new WorkspaceManager(() => config, new MemoryLogger());
+
+    const workspace = await manager.ensureWorkspace({
+      ...makeIssue("FE-11"),
+      labels: ["repo:frontend"]
+    });
+
+    const workspaceRepo = path.join(workspace.path, "frontend");
+    expect(workspace.repositories).toHaveLength(1);
+    expect(workspace.repositories[0]).toMatchObject({
+      name: "frontend",
+      path: workspaceRepo,
+      url: `${pathToFileURL(originRoot).href}/metyatech/frontend.git`,
+      created_now: true
+    });
+    await expect(access(path.join(workspaceRepo, ".git"))).resolves.toBeUndefined();
+  });
+
+  it("ignores a local candidate that is only nested inside another Git checkout", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-local-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "local-root");
+    const nestedCandidate = path.join(localRoot, "frontend");
+    const originRoot = path.join(parent, "origins");
+    const origin = path.join(originRoot, "metyatech", "frontend.git");
+    await initGitRepo(localRoot);
+    await mkdir(nestedCandidate, { recursive: true });
+    await initBareGitRepo(origin);
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.base_url = pathToFileURL(originRoot).href;
+    config.repositories.local = { prefer_existing: true, roots: [localRoot] };
+    const manager = new WorkspaceManager(() => config, new MemoryLogger());
+
+    const workspace = await manager.ensureWorkspace({
+      ...makeIssue("FE-12"),
+      labels: ["repo:frontend"]
+    });
+
+    expect(workspace.repositories[0]?.path).toBe(path.join(workspace.path, "frontend"));
+    expect(workspace.repositories[0]?.created_now).toBe(true);
+  });
 });
 
 function makeIssue(identifier: string, state = "Todo"): Issue {
@@ -256,7 +340,8 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
       protocol: "https",
       label_prefix: "repo:",
       default: [],
-      required: false
+      required: false,
+      local: { prefer_existing: false, roots: [] }
     },
     hooks: {
       after_create: afterCreate,
@@ -282,4 +367,25 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
       stall_timeout_ms: 300000
     }
   };
+}
+
+async function initGitRepo(repoPath: string): Promise<void> {
+  await mkdir(repoPath, { recursive: true });
+  await runGit(["init", "--quiet"], repoPath);
+}
+
+async function initBareGitRepo(repoPath: string): Promise<void> {
+  await mkdir(path.dirname(repoPath), { recursive: true });
+  await runGit(["init", "--bare", "--quiet", repoPath], path.dirname(repoPath));
+}
+
+function runGit(args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, stdio: "ignore", windowsHide: true });
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`git exited with code ${code ?? "null"}`));
+    });
+  });
 }

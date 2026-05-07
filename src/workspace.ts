@@ -125,10 +125,11 @@ export class WorkspaceManager {
   }
 
   /**
-   * Resolve the repositories selected for `issue`, then for each one ensure
-   * `<workspace>/<repo>/` is a real Git checkout pointing at `origin`. New
-   * directories are cloned; existing directories are reused unchanged so the
-   * agent's in-progress branches and uncommitted edits survive across runs.
+   * Resolve the repositories selected for `issue`, then for each one prefer a
+   * configured local checkout when it already exists. Repositories with no
+   * local checkout are cloned into `<workspace>/<repo>/`; existing workspace
+   * checkouts are reused unchanged so the agent's in-progress branches and
+   * uncommitted edits survive across runs.
    * Throws when `repositories.required` is set but selection is empty.
    */
   private async ensureRepoCheckouts(issue: Issue, workspacePath: string): Promise<RepoCheckout[]> {
@@ -145,6 +146,22 @@ export class WorkspaceManager {
     }
     const checkouts: RepoCheckout[] = [];
     for (const selection of selections) {
+      const localPath = await this.findLocalCheckout(selection.name);
+      if (localPath) {
+        checkouts.push({
+          name: selection.name,
+          path: localPath,
+          url: selection.url,
+          created_now: false
+        });
+        this.logger.info("repo_local_checkout_selected", {
+          repo: selection.name,
+          url: selection.url,
+          path: localPath,
+          identifier: issue.identifier
+        });
+        continue;
+      }
       const repoPath = path.resolve(workspacePath, selection.name);
       ensureInsideRoot(workspacePath, repoPath);
       const exists = await pathExists(repoPath);
@@ -170,6 +187,16 @@ export class WorkspaceManager {
       });
     }
     return checkouts;
+  }
+
+  private async findLocalCheckout(name: string): Promise<string | null> {
+    const config = this.getConfig();
+    if (!config.repositories.local.prefer_existing) return null;
+    for (const root of config.repositories.local.roots) {
+      const candidate = path.resolve(root, name);
+      if (await isGitCheckoutRoot(candidate)) return realpath(candidate);
+    }
+    return null;
   }
 
   async beforeRun(issue: Issue, workspace: Workspace): Promise<void> {
@@ -281,4 +308,54 @@ async function pathExists(target: string): Promise<boolean> {
     }
     throw error;
   }
+}
+
+async function isGitCheckoutRoot(target: string): Promise<boolean> {
+  try {
+    const stat = await lstat(target);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    const topLevel = (
+      await runGit(["-C", target, "rev-parse", "--show-toplevel"], target, 10000)
+    ).trim();
+    if (!topLevel) return false;
+    return sameRealPath(await realpath(topLevel), await realpath(target));
+  } catch {
+    return false;
+  }
+}
+
+function runGit(args: string[], cwd: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    const child = spawn("git", args, {
+      cwd,
+      env: sanitizedProcessEnv(),
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
+    });
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`git timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout);
+      else reject(new Error(`git exited with code ${code ?? "null"}`));
+    });
+  });
+}
+
+function sameRealPath(left: string, right: string): boolean {
+  const normalizedLeft = path.normalize(left);
+  const normalizedRight = path.normalize(right);
+  return process.platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
 }
