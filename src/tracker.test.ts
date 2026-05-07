@@ -148,7 +148,8 @@ function configForScope(project_slug: string | null, trigger_label: string | nul
       protocol: "https",
       label_prefix: "repo:",
       default: [],
-      required: false
+      required: false,
+      local: { prefer_existing: false, roots: [] }
     },
     hooks: {
       after_create: null,

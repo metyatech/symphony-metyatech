@@ -131,7 +131,7 @@ export function resolveServiceConfig(
     workspace: {
       root: resolvePathValue(workspaceRoot, workflowDir)
     },
-    repositories: resolveRepositoriesConfig(repositories),
+    repositories: resolveRepositoriesConfig(repositories, workflowDir),
     hooks: {
       after_create: getString(hooks.after_create, null),
       before_run: getString(hooks.before_run, null),
@@ -227,17 +227,25 @@ export async function renderPrompt(
  * the prompt context. Once a workflow declares `repositories.owner` (or any
  * `default` repos) Symphony begins clone/reuse on every workspace.
  */
-function resolveRepositoriesConfig(raw: Record<string, unknown>): RepositoriesConfig {
+function resolveRepositoriesConfig(
+  raw: Record<string, unknown>,
+  workflowDir: string
+): RepositoriesConfig {
   const protocolRaw = getString(raw.protocol, "https");
   const protocol = protocolRaw === "ssh" ? "ssh" : "https";
   const baseUrl = getString(raw.base_url, DEFAULT_REPO_BASE_URL) ?? DEFAULT_REPO_BASE_URL;
+  const local = getRecord(raw.local);
   return {
     owner: getString(raw.owner, null),
     base_url: baseUrl.replace(/\/+$/, ""),
     protocol,
     label_prefix: getString(raw.label_prefix, DEFAULT_LABEL_PREFIX) ?? DEFAULT_LABEL_PREFIX,
     default: getStringArray(raw.default, []),
-    required: typeof raw.required === "boolean" ? raw.required : false
+    required: typeof raw.required === "boolean" ? raw.required : false,
+    local: {
+      prefer_existing: typeof local.prefer_existing === "boolean" ? local.prefer_existing : false,
+      roots: getStringArray(local.roots, []).map((root) => resolvePathValue(root, workflowDir))
+    }
   };
 }
 

@@ -299,7 +299,8 @@ function configFor(root: string): ServiceConfig {
       protocol: "https",
       label_prefix: "repo:",
       default: [],
-      required: false
+      required: false,
+      local: { prefer_existing: false, roots: [] }
     },
     hooks: {
       after_create: null,

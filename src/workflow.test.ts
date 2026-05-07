@@ -155,6 +155,38 @@ describe("workflow loading", () => {
     expect(selected[0]?.url).toBe("https://github.com/metyatech/frontend.git");
   });
 
+  it("parses local repository preference roots relative to the workflow file", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      [
+        "---",
+        "tracker:",
+        "  kind: linear",
+        "  api_key: x",
+        "  team: DEMO",
+        "repositories:",
+        "  owner: metyatech",
+        "  local:",
+        "    prefer_existing: true",
+        "    roots:",
+        "      - .",
+        "      - ../shared-workspace",
+        "---",
+        "Work on {{ issue.identifier }}."
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.repositories.local).toEqual({
+      prefer_existing: true,
+      roots: [path.resolve(dir), path.resolve(dir, "../shared-workspace")]
+    });
+  });
+
   it("renders the prompt with the repos array provided to renderPrompt", async () => {
     const repos = [
       {

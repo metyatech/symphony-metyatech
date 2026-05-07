@@ -32,6 +32,10 @@ export interface RepositoriesConfig {
   label_prefix: string;
   default: string[];
   required: boolean;
+  local: {
+    prefer_existing: boolean;
+    roots: string[];
+  };
 }
 
 export interface RepoCheckout {
