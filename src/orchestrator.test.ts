@@ -300,7 +300,16 @@ function configFor(root: string): ServiceConfig {
       label_prefix: "repo:",
       default: [],
       required: false,
-      local: { prefer_existing: false, roots: [] }
+      local: {
+        prefer_existing: false,
+        roots: [],
+        isolation: "none",
+        init_if_missing: false,
+        init_no_verify: false,
+        branch_template: "symphony/{{ issue.identifier }}",
+        path_template: "{{ workspace }}/{{ repo }}",
+        overrides: new Map()
+      }
     },
     hooks: {
       after_create: null,
