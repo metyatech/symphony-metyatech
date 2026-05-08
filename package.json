@@ -25,6 +25,7 @@
     "verify": "npm run format && npm run lint && npm run build && npm test"
   },
   "dependencies": {
+    "@metyatech/managed-worktree-system": "^2.3.1",
     "commander": "^14.0.2",
     "express": "^5.2.1",
     "liquidjs": "^10.24.0",
