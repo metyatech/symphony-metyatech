@@ -1,12 +1,14 @@
-import { lstat, mkdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rm } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { SymphonyError, messageFromUnknown } from "./errors.js";
+import { defaultMwtClient, type MwtClient } from "./mwt-adapter.js";
 import { sanitizedProcessEnv } from "./process-safety.js";
 import { selectRepositoriesForIssue } from "./workflow.js";
 import type { Issue, Logger, RepoCheckout, ServiceConfig, Workspace } from "./types.js";
 
 export type HookName = "after_create" | "before_run" | "after_run" | "before_remove";
+type SelectedRepository = ReturnType<typeof selectRepositoriesForIssue>[number];
 
 export function sanitizeWorkspaceKey(identifier: string): string {
   return identifier.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -88,7 +90,8 @@ function repoEnvSlot(name: string): string {
 export class WorkspaceManager {
   constructor(
     private readonly getConfig: () => ServiceConfig,
-    private readonly logger: Logger
+    private readonly logger: Logger,
+    private readonly mwt: MwtClient = defaultMwtClient
   ) {}
 
   workspaceFor(identifier: string): { path: string; workspace_key: string } {
@@ -148,18 +151,22 @@ export class WorkspaceManager {
     for (const selection of selections) {
       const localPath = await this.findLocalCheckout(selection.name);
       if (localPath) {
-        checkouts.push({
-          name: selection.name,
-          path: localPath,
-          url: selection.url,
-          created_now: false
-        });
-        this.logger.info("repo_local_checkout_selected", {
-          repo: selection.name,
-          url: selection.url,
-          path: localPath,
-          identifier: issue.identifier
-        });
+        if (config.repositories.local.isolation === "mwt") {
+          checkouts.push(await this.ensureMwtCheckout(selection, issue, workspacePath, localPath));
+        } else {
+          checkouts.push({
+            name: selection.name,
+            path: localPath,
+            url: selection.url,
+            created_now: false
+          });
+          this.logger.info("repo_local_checkout_selected", {
+            repo: selection.name,
+            url: selection.url,
+            path: localPath,
+            identifier: issue.identifier
+          });
+        }
         continue;
       }
       const repoPath = path.resolve(workspacePath, selection.name);
@@ -189,6 +196,202 @@ export class WorkspaceManager {
     return checkouts;
   }
 
+  private async ensureMwtCheckout(
+    selection: SelectedRepository,
+    issue: Issue,
+    workspacePath: string,
+    seedPath: string
+  ): Promise<RepoCheckout> {
+    const branch = renderMwtBranchTemplate(
+      this.getConfig().repositories.local.branch_template,
+      selection,
+      issue,
+      workspacePath
+    );
+    const repoPath = renderMwtPathTemplate(
+      this.getConfig().repositories.local.path_template,
+      selection,
+      issue,
+      workspacePath
+    );
+
+    await this.ensureMwtSeedConfigured(seedPath, selection);
+
+    const reusable = await this.findReusableMwtWorktree(seedPath, repoPath, branch);
+    if (reusable) {
+      this.logger.info("repo_mwt_worktree_reused", {
+        repo: selection.name,
+        owner: selection.owner,
+        url: selection.url,
+        seed_path: seedPath,
+        path: reusable,
+        branch,
+        identifier: issue.identifier
+      });
+      return { name: selection.name, path: reusable, url: selection.url, created_now: false };
+    }
+
+    if (await pathExists(repoPath)) {
+      throw new SymphonyError(
+        "mwt_worktree_path_occupied",
+        `Rendered mwt worktree path is occupied by an unmanaged directory: ${repoPath}`
+      );
+    }
+
+    const defaultBranch = this.repositoryDefaultBranch(selection);
+    const createOptions: {
+      base?: string;
+      target?: string;
+      createdBy: string;
+      pathTemplate: string;
+      branchTemplate: string;
+      allowNonSiblingWorktreePath: boolean;
+      reuseExistingBranch: boolean;
+      yes: boolean;
+    } = {
+      createdBy: "symphony",
+      pathTemplate: repoPath,
+      branchTemplate: branch,
+      allowNonSiblingWorktreePath: true,
+      reuseExistingBranch: true,
+      yes: true
+    };
+    if (defaultBranch) {
+      createOptions.base = defaultBranch;
+      createOptions.target = defaultBranch;
+    }
+    const created = await this.mwt.createTaskWorktree(seedPath, issue.identifier, createOptions);
+    const createdPath = path.resolve(created.worktreePath);
+    ensureInsideRoot(workspacePath, createdPath);
+    if (!sameRealPath(path.resolve(repoPath), createdPath)) {
+      throw new SymphonyError(
+        "mwt_worktree_path_mismatch",
+        `mwt created ${createdPath} instead of requested path ${repoPath}`
+      );
+    }
+    if (created.branch !== branch) {
+      throw new SymphonyError(
+        "mwt_worktree_branch_mismatch",
+        `mwt created branch ${created.branch} instead of requested branch ${branch}`
+      );
+    }
+    this.logger.info("repo_mwt_worktree_created", {
+      repo: selection.name,
+      owner: selection.owner,
+      url: selection.url,
+      seed_path: seedPath,
+      path: createdPath,
+      branch,
+      identifier: issue.identifier
+    });
+    return { name: selection.name, path: createdPath, url: selection.url, created_now: true };
+  }
+
+  private async ensureMwtSeedConfigured(
+    seedPath: string,
+    selection: SelectedRepository
+  ): Promise<void> {
+    const configPath = path.join(seedPath, ".mwt", "config.toml");
+    if (await pathExists(configPath)) {
+      await this.mwt.loadConfig(seedPath);
+      return;
+    }
+
+    const localConfig = this.getConfig().repositories.local;
+    if (!localConfig.init_if_missing) {
+      throw new SymphonyError(
+        "mwt_config_missing",
+        `mwt config is missing for ${seedPath}; set repositories.local.init_if_missing to initialize it`
+      );
+    }
+
+    const defaultBranch = this.repositoryDefaultBranch(selection);
+    const initOptions: { base?: string; noVerify?: boolean } = {};
+    if (defaultBranch) initOptions.base = defaultBranch;
+    if (await this.shouldInitializeWithoutVerify(seedPath)) initOptions.noVerify = true;
+    await this.mwt.initializeRepository(seedPath, initOptions);
+    this.logger.info("mwt_seed_initialized", {
+      repo: selection.name,
+      owner: selection.owner,
+      seed_path: seedPath,
+      default_branch: defaultBranch,
+      no_verify: initOptions.noVerify === true
+    });
+  }
+
+  /**
+   * managed-worktree-system 2.3.0 exposes create/list operations rather than an
+   * idempotent get-or-create call. Symphony therefore reuses only a managed task
+   * worktree whose branch and rendered path both match; the same branch at a
+   * different path is rejected instead of being reset or recreated.
+   */
+  private async findReusableMwtWorktree(
+    seedPath: string,
+    repoPath: string,
+    branch: string
+  ): Promise<string | null> {
+    const target = await canonicalPath(repoPath);
+    let branchPath: string | null = null;
+    const worktrees = await this.mwt.listWorktrees(seedPath, { kind: "task" });
+    for (const worktree of worktrees) {
+      if (worktree.kind !== "task" || worktree.branch !== branch) continue;
+      const candidate = await canonicalPath(worktree.path);
+      if (sameRealPath(candidate, target)) return candidate;
+      branchPath = candidate;
+    }
+    if (branchPath) {
+      throw new SymphonyError(
+        "mwt_branch_reuse_conflict",
+        `mwt branch ${branch} already exists at ${branchPath}; refusing to recreate it for ${repoPath}`
+      );
+    }
+    return null;
+  }
+
+  private repositoryDefaultBranch(selection: SelectedRepository): string | null {
+    const overrides = this.getConfig().repositories.local.overrides;
+    const keys = selection.owner
+      ? [`${selection.owner}/${selection.name}`, selection.name]
+      : [selection.name];
+    for (const key of keys) {
+      const exact = overrides.get(key)?.default_branch ?? null;
+      if (exact) return exact;
+      const insensitive = [...overrides.entries()].find(
+        ([candidate]) => candidate.toLowerCase() === key.toLowerCase()
+      );
+      if (insensitive?.[1].default_branch) return insensitive[1].default_branch;
+    }
+    return null;
+  }
+
+  private async shouldInitializeWithoutVerify(seedPath: string): Promise<boolean> {
+    if (!this.getConfig().repositories.local.init_no_verify) return false;
+    let raw: string;
+    try {
+      raw = await readFile(path.join(seedPath, "package.json"), "utf8");
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+      ) {
+        return !(await hasSupportedVerifyWrapper(seedPath));
+      }
+      throw error;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      return false;
+    }
+    if (!isRecord(parsed)) return false;
+    const scripts = isRecord(parsed.scripts) ? parsed.scripts : {};
+    const verify = scripts.verify;
+    return typeof verify !== "string" || verify.trim() === "";
+  }
+
   private async findLocalCheckout(name: string): Promise<string | null> {
     const config = this.getConfig();
     if (!config.repositories.local.prefer_existing) return null;
@@ -213,6 +416,35 @@ export class WorkspaceManager {
     const config = this.getConfig();
     const { path: workspacePath, workspace_key } = this.workspaceFor(issue.identifier);
     if (!(await pathExists(workspacePath))) return;
+    if (config.repositories.local.isolation === "mwt") {
+      try {
+        const retained = this.plannedMwtWorktreePaths(issue, workspacePath);
+        if (retained.length > 0) {
+          for (const repo of retained) {
+            this.logger.warn("mwt_worktree_retained", {
+              repo: repo.name,
+              path: repo.path,
+              workspace_path: workspacePath,
+              identifier: issue.identifier
+            });
+          }
+          this.logger.warn("workspace_cleanup_retained", {
+            workspace_path: workspacePath,
+            identifier: issue.identifier,
+            reason: "repositories.local.isolation=mwt retains managed worktrees"
+          });
+          return;
+        }
+      } catch (error) {
+        this.logger.warn("workspace_cleanup_retained", {
+          workspace_path: workspacePath,
+          identifier: issue.identifier,
+          error: messageFromUnknown(error),
+          reason: "could not safely enumerate mwt worktrees"
+        });
+        return;
+      }
+    }
     await ensureRealDirectoryInsideRoot(config.workspace.root, workspacePath);
     const workspace: Workspace = {
       path: workspacePath,
@@ -228,6 +460,21 @@ export class WorkspaceManager {
       workspace_path: workspacePath,
       identifier: issue.identifier
     });
+  }
+
+  private plannedMwtWorktreePaths(
+    issue: Issue,
+    workspacePath: string
+  ): Array<{ name: string; path: string }> {
+    return selectRepositoriesForIssue(this.getConfig(), issue).map((selection) => ({
+      name: selection.name,
+      path: renderMwtPathTemplate(
+        this.getConfig().repositories.local.path_template,
+        selection,
+        issue,
+        workspacePath
+      )
+    }));
   }
 
   private async runHook(
@@ -252,6 +499,79 @@ export class WorkspaceManager {
       });
       if (fatal) throw new SymphonyError("hook_failed", `${name} hook failed`, error);
     }
+  }
+}
+
+function renderMwtBranchTemplate(
+  template: string,
+  selection: SelectedRepository,
+  issue: Issue,
+  workspacePath: string
+): string {
+  const rendered = renderMwtTemplate(template, selection, issue, workspacePath).trim();
+  if (!rendered) {
+    throw new SymphonyError(
+      "mwt_template_error",
+      "repositories.local.branch_template rendered empty"
+    );
+  }
+  return rendered;
+}
+
+function renderMwtPathTemplate(
+  template: string,
+  selection: SelectedRepository,
+  issue: Issue,
+  workspacePath: string
+): string {
+  const rendered = renderMwtTemplate(template, selection, issue, workspacePath).trim();
+  if (!rendered) {
+    throw new SymphonyError(
+      "mwt_template_error",
+      "repositories.local.path_template rendered empty"
+    );
+  }
+  const resolved = path.resolve(
+    path.isAbsolute(rendered) ? rendered : path.join(workspacePath, rendered)
+  );
+  ensureInsideRoot(workspacePath, resolved);
+  return resolved;
+}
+
+function renderMwtTemplate(
+  template: string,
+  selection: SelectedRepository,
+  issue: Issue,
+  workspacePath: string
+): string {
+  const values = new Map<string, string>([
+    ["issue.id", issue.id],
+    ["issue.identifier", issue.identifier],
+    ["issue.title", issue.title],
+    ["owner", selection.owner ?? ""],
+    ["repo", selection.name],
+    ["workspace", workspacePath]
+  ]);
+  return template.replace(/\{\{\s*([A-Za-z0-9_.]+)\s*\}\}/g, (_match, key: string) => {
+    const value = values.get(key);
+    if (value === undefined) {
+      throw new SymphonyError(
+        "mwt_template_error",
+        `Unknown repositories.local template key: ${key}`
+      );
+    }
+    return value;
+  });
+}
+
+async function canonicalPath(target: string): Promise<string> {
+  try {
+    return await realpath(target);
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") {
+      return path.resolve(target);
+    }
+    throw error;
   }
 }
 
@@ -310,6 +630,20 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
+async function hasSupportedVerifyWrapper(seedPath: string): Promise<boolean> {
+  for (const relativePath of [
+    "scripts/verify.mjs",
+    "scripts/verify.js",
+    "scripts/verify.cjs",
+    "scripts/verify.ps1",
+    "scripts/verify.cmd",
+    "scripts/verify.sh"
+  ]) {
+    if (await pathExists(path.join(seedPath, relativePath))) return true;
+  }
+  return false;
+}
+
 async function isGitCheckoutRoot(target: string): Promise<boolean> {
   try {
     const stat = await lstat(target);
@@ -350,6 +684,10 @@ function runGit(args: string[], cwd: string, timeoutMs: number): Promise<string>
       else reject(new Error(`git exited with code ${code ?? "null"}`));
     });
   });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function sameRealPath(left: string, right: string): boolean {

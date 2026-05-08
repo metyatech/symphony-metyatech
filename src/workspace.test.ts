@@ -5,6 +5,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { MemoryLogger } from "./logger.js";
+import type { MwtClient } from "./mwt-adapter.js";
 import type { Issue, ServiceConfig } from "./types.js";
 import {
   buildHookEnv,
@@ -219,7 +220,8 @@ describe("workspace management", () => {
     await initGitRepo(localRepo);
     const config = configFor(root, null);
     config.repositories.owner = "metyatech";
-    config.repositories.local = { prefer_existing: true, roots: [localRoot] };
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
     const manager = new WorkspaceManager(() => config, new MemoryLogger());
 
     const workspace = await manager.ensureWorkspace({
@@ -246,10 +248,8 @@ describe("workspace management", () => {
     const config = configFor(root, null);
     config.repositories.owner = "metyatech";
     config.repositories.base_url = pathToFileURL(originRoot).href;
-    config.repositories.local = {
-      prefer_existing: true,
-      roots: [path.join(parent, "missing-local")]
-    };
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [path.join(parent, "missing-local")];
     const manager = new WorkspaceManager(() => config, new MemoryLogger());
 
     const workspace = await manager.ensureWorkspace({
@@ -281,7 +281,8 @@ describe("workspace management", () => {
     const config = configFor(root, null);
     config.repositories.owner = "metyatech";
     config.repositories.base_url = pathToFileURL(originRoot).href;
-    config.repositories.local = { prefer_existing: true, roots: [localRoot] };
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
     const manager = new WorkspaceManager(() => config, new MemoryLogger());
 
     const workspace = await manager.ensureWorkspace({
@@ -291,6 +292,252 @@ describe("workspace management", () => {
 
     expect(workspace.repositories[0]?.path).toBe(path.join(workspace.path, "frontend"));
     expect(workspace.repositories[0]?.created_now).toBe(true);
+  });
+
+  it("initializes a local seed and creates an mwt worktree under the issue workspace", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "XroidVerse");
+    await initGitRepo(seedRepo);
+    await writeFile(path.join(seedRepo, "package.json"), JSON.stringify({ scripts: {} }), "utf8");
+    const config = configFor(root, null);
+    config.repositories.owner = "Verseday";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    config.repositories.local.init_if_missing = true;
+    config.repositories.local.init_no_verify = true;
+    config.repositories.local.overrides.set("Verseday/XroidVerse", { default_branch: "develop" });
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      createWorktreePath: (seedRoot, _taskName, options) =>
+        String(options?.pathTemplate ?? seedRoot)
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    const workspace = await manager.ensureWorkspace({
+      ...makeIssue("FE-20"),
+      labels: ["repo:Verseday/XroidVerse"]
+    });
+
+    const expectedWorktree = path.join(workspace.path, "XroidVerse");
+    expect(workspace.repositories).toHaveLength(1);
+    expect(workspace.repositories[0]).toMatchObject({
+      name: "XroidVerse",
+      path: expectedWorktree,
+      url: "https://github.com/Verseday/XroidVerse.git",
+      created_now: true
+    });
+    expect(calls.initialize).toHaveLength(1);
+    expect(calls.initialize[0]?.seedRoot).toBe(await realpath(seedRepo));
+    expect(calls.initialize[0]?.options).toMatchObject({ base: "develop", noVerify: true });
+    expect(calls.create).toHaveLength(1);
+    expect(calls.create[0]?.options).toMatchObject({
+      base: "develop",
+      target: "develop",
+      createdBy: "symphony",
+      pathTemplate: expectedWorktree,
+      branchTemplate: "symphony/FE-20",
+      yes: true
+    });
+  });
+
+  it("does not pass mwt init noVerify when the seed has a verify script", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    await initGitRepo(seedRepo);
+    await writeFile(
+      path.join(seedRepo, "package.json"),
+      JSON.stringify({ scripts: { verify: "npm test" } }),
+      "utf8"
+    );
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    config.repositories.local.init_if_missing = true;
+    config.repositories.local.init_no_verify = true;
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      createWorktreePath: (seedRoot, _taskName, options) =>
+        String(options?.pathTemplate ?? seedRoot)
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    await manager.ensureWorkspace({ ...makeIssue("FE-21"), labels: ["repo:frontend"] });
+
+    expect(calls.initialize[0]?.options).not.toMatchObject({ noVerify: true });
+  });
+
+  it("passes mwt init noVerify when a seed has no package manifest or verify wrapper", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "content-repo");
+    await initGitRepo(seedRepo);
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    config.repositories.local.init_if_missing = true;
+    config.repositories.local.init_no_verify = true;
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      createWorktreePath: (seedRoot, _taskName, options) =>
+        String(options?.pathTemplate ?? seedRoot)
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    await manager.ensureWorkspace({ ...makeIssue("FE-26"), labels: ["repo:content-repo"] });
+
+    expect(calls.initialize[0]?.options).toMatchObject({ noVerify: true });
+  });
+
+  it("keeps mwt init verification when a seed without package manifest has a verify wrapper", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "scripted-repo");
+    await initGitRepo(seedRepo);
+    await mkdir(path.join(seedRepo, "scripts"), { recursive: true });
+    await writeFile(path.join(seedRepo, "scripts", "verify.mjs"), "", "utf8");
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    config.repositories.local.init_if_missing = true;
+    config.repositories.local.init_no_verify = true;
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      createWorktreePath: (seedRoot, _taskName, options) =>
+        String(options?.pathTemplate ?? seedRoot)
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    await manager.ensureWorkspace({ ...makeIssue("FE-27"), labels: ["repo:scripted-repo"] });
+
+    expect(calls.initialize[0]?.options).not.toMatchObject({ noVerify: true });
+  });
+
+  it("reuses an existing mwt worktree only when branch and path both match", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    const existingWorktree = path.join(root, "FE-22", "frontend");
+    await initGitRepo(seedRepo);
+    await mkdir(path.join(seedRepo, ".mwt"), { recursive: true });
+    await writeFile(
+      path.join(seedRepo, ".mwt", "config.toml"),
+      'default_branch = "main"\n',
+      "utf8"
+    );
+    await mkdir(existingWorktree, { recursive: true });
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      worktrees: [mwtListItem(existingWorktree, "symphony/FE-22")]
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    const workspace = await manager.ensureWorkspace({
+      ...makeIssue("FE-22"),
+      labels: ["repo:frontend"]
+    });
+
+    expect(workspace.repositories[0]).toMatchObject({
+      name: "frontend",
+      path: await realpath(existingWorktree),
+      created_now: false
+    });
+    expect(calls.create).toHaveLength(0);
+  });
+
+  it("rejects an occupied mwt target path that is not a managed matching worktree", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    await initGitRepo(seedRepo);
+    await mkdir(path.join(seedRepo, ".mwt"), { recursive: true });
+    await writeFile(
+      path.join(seedRepo, ".mwt", "config.toml"),
+      'default_branch = "main"\n',
+      "utf8"
+    );
+    const occupied = path.join(root, "FE-23", "frontend");
+    await mkdir(occupied, { recursive: true });
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    const manager = new WorkspaceManager(
+      () => config,
+      new MemoryLogger(),
+      fakeMwtClient(createMwtCallLog())
+    );
+
+    await expect(
+      manager.ensureWorkspace({ ...makeIssue("FE-23"), labels: ["repo:frontend"] })
+    ).rejects.toThrow(/unmanaged directory/);
+  });
+
+  it("rejects mwt path templates that escape the issue workspace before init", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    await initGitRepo(seedRepo);
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    config.repositories.local.init_if_missing = true;
+    config.repositories.local.path_template = "{{ workspace }}/../outside/{{ repo }}";
+    const calls = createMwtCallLog();
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), fakeMwtClient(calls));
+
+    await expect(
+      manager.ensureWorkspace({ ...makeIssue("FE-24"), labels: ["repo:frontend"] })
+    ).rejects.toThrow(/escapes root/);
+    expect(calls.initialize).toHaveLength(0);
+  });
+
+  it("retains mwt worktrees and warns instead of deleting the issue workspace", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-workspaces-"));
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.default = ["frontend"];
+    config.repositories.local.isolation = "mwt";
+    const logger = new MemoryLogger();
+    const manager = new WorkspaceManager(() => config, logger);
+    const workspace = manager.workspaceFor("FE-25");
+    await mkdir(workspace.path, { recursive: true });
+    await writeFile(path.join(workspace.path, "keep.txt"), "retained", "utf8");
+
+    await manager.removeWorkspace(makeIssue("FE-25"));
+
+    await expect(access(workspace.path)).resolves.toBeUndefined();
+    const retained = logger.entries.find((entry) => entry.event === "mwt_worktree_retained");
+    expect(retained?.level).toBe("warn");
+    expect(retained?.fields.path).toBe(path.join(workspace.path, "frontend"));
+    expect(
+      logger.entries.some(
+        (entry) => entry.level === "warn" && entry.event === "workspace_cleanup_retained"
+      )
+    ).toBe(true);
   });
 });
 
@@ -341,7 +588,16 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
       label_prefix: "repo:",
       default: [],
       required: false,
-      local: { prefer_existing: false, roots: [] }
+      local: {
+        prefer_existing: false,
+        roots: [],
+        isolation: "none",
+        init_if_missing: false,
+        init_no_verify: false,
+        branch_template: "symphony/{{ issue.identifier }}",
+        path_template: "{{ workspace }}/{{ repo }}",
+        overrides: new Map()
+      }
     },
     hooks: {
       after_create: afterCreate,
@@ -366,6 +622,99 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
       read_timeout_ms: 5000,
       stall_timeout_ms: 300000
     }
+  };
+}
+
+type MwtInitializeOptions = Parameters<MwtClient["initializeRepository"]>[1];
+type MwtCreateOptions = Parameters<MwtClient["createTaskWorktree"]>[2];
+type MwtListOptions = Parameters<MwtClient["listWorktrees"]>[1];
+type MwtListResult = Awaited<ReturnType<MwtClient["listWorktrees"]>>;
+
+interface MwtCallLog {
+  initialize: Array<{ seedRoot: string; options: MwtInitializeOptions }>;
+  create: Array<{ seedRoot: string; taskName: string; options: MwtCreateOptions }>;
+  list: Array<{ seedRoot: string; options: MwtListOptions }>;
+}
+
+interface FakeMwtOptions {
+  worktrees?: MwtListResult;
+  createWorktreePath?: (seedRoot: string, taskName: string, options: MwtCreateOptions) => string;
+}
+
+function createMwtCallLog(): MwtCallLog {
+  return { initialize: [], create: [], list: [] };
+}
+
+function fakeMwtClient(calls: MwtCallLog, options: FakeMwtOptions = {}): MwtClient {
+  return {
+    loadConfig(seedRoot: string) {
+      return Promise.resolve({ seedRoot });
+    },
+    initializeRepository(seedRoot: string, initOptions?: MwtInitializeOptions) {
+      calls.initialize.push({ seedRoot, options: initOptions });
+      return Promise.resolve({
+        initialized: true,
+        config: {},
+        seedRoot,
+        seedMarker: {
+          version: 1,
+          kind: "seed",
+          repoId: path.basename(seedRoot),
+          repoRoot: seedRoot
+        }
+      });
+    },
+    async createTaskWorktree(seedRoot: string, taskName: string, createOptions?: MwtCreateOptions) {
+      calls.create.push({ seedRoot, taskName, options: createOptions });
+      const worktreePath = options.createWorktreePath
+        ? options.createWorktreePath(seedRoot, taskName, createOptions)
+        : String(createOptions?.pathTemplate ?? path.join(path.dirname(seedRoot), taskName));
+      await mkdir(worktreePath, { recursive: true });
+      const branch = createOptions?.branchTemplate ?? `symphony/${taskName}`;
+      const baseBranch = createOptions?.base ?? "main";
+      const targetBranch = createOptions?.target ?? baseBranch;
+      return {
+        worktreeName: taskName,
+        worktreeSlug: taskName.toLowerCase(),
+        worktreeId: "fakeid",
+        worktreePath,
+        branch,
+        baseBranch,
+        targetBranch,
+        bootstrapProfile: "default",
+        copiedFiles: [],
+        marker: {
+          version: 1,
+          kind: "task",
+          repoId: path.basename(seedRoot),
+          repoRoot: seedRoot,
+          worktreeName: taskName,
+          worktreeSlug: taskName.toLowerCase(),
+          worktreeId: "fakeid",
+          worktreePath,
+          branch,
+          baseBranch,
+          targetBranch
+        }
+      };
+    },
+    listWorktrees(seedRoot: string, listOptions?: MwtListOptions) {
+      calls.list.push({ seedRoot, options: listOptions });
+      return Promise.resolve(options.worktrees ?? []);
+    }
+  };
+}
+
+function mwtListItem(worktreePath: string, branch: string): MwtListResult[number] {
+  return {
+    path: worktreePath,
+    branch,
+    head: "abc123",
+    kind: "task",
+    managedStatus: "active",
+    dirtyTracked: false,
+    upstream: null,
+    divergence: null
   };
 }
 
