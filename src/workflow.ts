@@ -16,6 +16,8 @@ const DEFAULT_ACTIVE_STATES = ["Todo", "In Progress"];
 const DEFAULT_TERMINAL_STATES = ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"];
 const DEFAULT_LABEL_PREFIX = "repo:";
 const DEFAULT_REPO_BASE_URL = "https://github.com";
+const DEFAULT_MWT_BRANCH_TEMPLATE = "symphony/{{ issue.identifier }}";
+const DEFAULT_MWT_PATH_TEMPLATE = "{{ workspace }}/{{ repo }}";
 
 export async function loadWorkflow(
   workflowPath?: string
@@ -235,6 +237,7 @@ function resolveRepositoriesConfig(
   const protocol = protocolRaw === "ssh" ? "ssh" : "https";
   const baseUrl = getString(raw.base_url, DEFAULT_REPO_BASE_URL) ?? DEFAULT_REPO_BASE_URL;
   const local = getRecord(raw.local);
+  const isolation = resolveLocalIsolation(local.isolation);
   return {
     owner: getString(raw.owner, null),
     base_url: baseUrl.replace(/\/+$/, ""),
@@ -244,9 +247,39 @@ function resolveRepositoriesConfig(
     required: typeof raw.required === "boolean" ? raw.required : false,
     local: {
       prefer_existing: typeof local.prefer_existing === "boolean" ? local.prefer_existing : false,
-      roots: getStringArray(local.roots, []).map((root) => resolvePathValue(root, workflowDir))
+      roots: getStringArray(local.roots, []).map((root) => resolvePathValue(root, workflowDir)),
+      isolation,
+      init_if_missing: typeof local.init_if_missing === "boolean" ? local.init_if_missing : false,
+      init_no_verify: typeof local.init_no_verify === "boolean" ? local.init_no_verify : false,
+      branch_template:
+        getString(local.branch_template, DEFAULT_MWT_BRANCH_TEMPLATE) ??
+        DEFAULT_MWT_BRANCH_TEMPLATE,
+      path_template:
+        getString(local.path_template, DEFAULT_MWT_PATH_TEMPLATE) ?? DEFAULT_MWT_PATH_TEMPLATE,
+      overrides: resolveLocalOverrides(getRecord(local.overrides))
     }
   };
+}
+
+function resolveLocalIsolation(value: unknown): "none" | "mwt" {
+  if (value === undefined) return "none";
+  if (value === "none" || value === "mwt") return value;
+  throw new SymphonyError(
+    "config_validation_error",
+    "repositories.local.isolation must be either 'none' or 'mwt'"
+  );
+}
+
+function resolveLocalOverrides(
+  raw: Record<string, unknown>
+): Map<string, { default_branch: string | null }> {
+  const overrides = new Map<string, { default_branch: string | null }>();
+  for (const [repoKey, value] of Object.entries(raw)) {
+    const override = getRecord(value);
+    const defaultBranch = getTrimmedString(override.default_branch, null);
+    overrides.set(repoKey, { default_branch: defaultBranch });
+  }
+  return overrides;
 }
 
 const REPO_NAME_PATTERN = /^[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)?$/;
@@ -335,6 +368,12 @@ function getRecord(value: unknown): Record<string, unknown> {
 
 function getString(value: unknown, fallback: string | null): string | null {
   return typeof value === "string" ? value : fallback;
+}
+
+function getTrimmedString(value: unknown, fallback: string | null): string | null {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim();
+  return trimmed === "" ? fallback : trimmed;
 }
 
 function getInteger(value: unknown, fallback: number): number {

@@ -183,8 +183,70 @@ describe("workflow loading", () => {
 
     expect(config.repositories.local).toEqual({
       prefer_existing: true,
-      roots: [path.resolve(dir), path.resolve(dir, "../shared-workspace")]
+      roots: [path.resolve(dir), path.resolve(dir, "../shared-workspace")],
+      isolation: "none",
+      init_if_missing: false,
+      init_no_verify: false,
+      branch_template: "symphony/{{ issue.identifier }}",
+      path_template: "{{ workspace }}/{{ repo }}",
+      overrides: new Map()
     });
+  });
+
+  it("parses mwt local isolation settings and repository default-branch overrides", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      [
+        "---",
+        "tracker:",
+        "  kind: linear",
+        "  api_key: x",
+        "  team: DEMO",
+        "repositories:",
+        "  owner: Verseday",
+        "  local:",
+        "    prefer_existing: true",
+        "    isolation: mwt",
+        "    init_if_missing: true",
+        "    init_no_verify: true",
+        "    branch_template: 'work/{{ issue.identifier }}'",
+        "    path_template: '{{ workspace }}/repos/{{ repo }}'",
+        "    overrides:",
+        "      XroidVerse:",
+        "        default_branch: main",
+        "      Verseday/XroidVerse:",
+        "        default_branch: develop",
+        "---",
+        "Work on {{ issue.identifier }}."
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.repositories.local.isolation).toBe("mwt");
+    expect(config.repositories.local.init_if_missing).toBe(true);
+    expect(config.repositories.local.init_no_verify).toBe(true);
+    expect(config.repositories.local.branch_template).toBe("work/{{ issue.identifier }}");
+    expect(config.repositories.local.path_template).toBe("{{ workspace }}/repos/{{ repo }}");
+    expect(config.repositories.local.overrides.get("XroidVerse")?.default_branch).toBe("main");
+    expect(config.repositories.local.overrides.get("Verseday/XroidVerse")?.default_branch).toBe(
+      "develop"
+    );
+  });
+
+  it("rejects unsupported local repository isolation modes", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: DEMO\nrepositories:\n  local:\n    isolation: symlink\n---\n",
+      "utf8"
+    );
+
+    await expect(loadServiceConfig(workflow)).rejects.toThrow(/repositories\.local\.isolation/);
   });
 
   it("renders the prompt with the repos array provided to renderPrompt", async () => {

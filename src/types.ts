@@ -25,6 +25,12 @@ export interface WorkflowDefinition {
   prompt_template: string;
 }
 
+export type LocalRepositoryIsolation = "none" | "mwt";
+
+export interface LocalRepositoryOverride {
+  default_branch: string | null;
+}
+
 export interface RepositoriesConfig {
   owner: string | null;
   base_url: string;
@@ -35,6 +41,12 @@ export interface RepositoriesConfig {
   local: {
     prefer_existing: boolean;
     roots: string[];
+    isolation: LocalRepositoryIsolation;
+    init_if_missing: boolean;
+    init_no_verify: boolean;
+    branch_template: string;
+    path_template: string;
+    overrides: Map<string, LocalRepositoryOverride>;
   };
 }
 
