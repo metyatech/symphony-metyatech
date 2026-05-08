@@ -79,6 +79,12 @@ repositories:
   local:
     prefer_existing: false # set true to use matching local checkouts first
     roots: [] # directories whose immediate children are repo checkouts
+    isolation: none # none or mwt; default preserves direct local checkout behavior
+    init_if_missing: false # mwt mode only: initialize .mwt/config.toml when absent
+    init_no_verify: false # mwt mode only: pass noVerify only when no verify script exists
+    branch_template: "symphony/{{ issue.identifier }}"
+    path_template: "{{ workspace }}/{{ repo }}"
+    overrides: {} # e.g. XroidVerse.default_branch or Verseday/XroidVerse.default_branch
 ```
 
 Repositories are selected from issue labels matching `label_prefix` and from
@@ -109,6 +115,44 @@ repositories:
 Local checkouts are not copied, linked, reset, or deleted by Symphony. Hook
 metadata reports them with `SYMPHONY_REPO_<NAME>_CREATED_NOW=false`, and
 workspace cleanup removes only the issue workspace directory.
+
+For mwt-managed local isolation, set `repositories.local.isolation: mwt`.
+Symphony still selects a local seed checkout from `repositories.local.roots`,
+but Codex receives an issue-scoped managed worktree path instead of the seed
+checkout path. Symphony initializes missing `.mwt/config.toml` only when
+`init_if_missing` is `true`. If `init_no_verify` is also `true`, Symphony passes
+`noVerify: true` only for seeds where mwt would not discover `scripts.verify` or
+a supported `scripts/verify.*` wrapper, so repositories with a real verify
+command keep mwt's verification path.
+
+```yaml
+repositories:
+  owner: Verseday
+  required: true
+  local:
+    prefer_existing: true
+    roots:
+      - .. # GHWS root relative to WORKFLOW.md
+    isolation: mwt
+    init_if_missing: true
+    init_no_verify: true
+    branch_template: "symphony/{{ issue.identifier }}"
+    path_template: "{{ workspace }}/{{ repo }}"
+    overrides:
+      XroidVerse:
+        default_branch: develop
+      Verseday/XroidVerse:
+        default_branch: develop
+```
+
+A `repo:Verseday/XroidVerse` issue label selects the local `XroidVerse` seed
+checkout from the configured roots, creates or reuses branch
+`symphony/<issue.identifier>`, and places the managed worktree at
+`<issue-workspace>/XroidVerse`. Existing managed worktrees are reused only when
+the branch and rendered path both match; a same-branch worktree at another path
+is treated as a conflict rather than being reset or recreated. Terminal cleanup
+does not delete mwt worktrees. Symphony logs warnings with the retained worktree
+paths and leaves the issue workspace in place for explicit operator cleanup.
 
 When `repositories.default` selects exactly one checkout, or labels select
 exactly one checkout, Codex starts with that checkout as its current working
