@@ -15,6 +15,7 @@ export type SymphonyErrorCode =
   | "hook_failed"
   | "tracker_error"
   | "codex_runner_error"
+  | "dashboard_api_start_failed"
   | "repositories_selection_empty";
 
 export class SymphonyError extends Error {
