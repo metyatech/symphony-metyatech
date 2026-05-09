@@ -57,8 +57,14 @@ export class Orchestrator {
 
   async saveState(filePath: string): Promise<void> {
     try {
+      // `claimed` is treated as a transient projection of (running ∪
+      // retry_attempts). `running` workers cannot survive a process restart,
+      // so persisting a claim that is only backed by a live worker would
+      // leave a stale "naked" claim on disk that blocks future dispatch
+      // forever. Persist only retry-backed claims; naked claims are dropped.
+      const persistedClaimed = Array.from(this.state.retry_attempts.keys());
       const stateObj = {
-        claimed: Array.from(this.state.claimed),
+        claimed: persistedClaimed,
         completed: Array.from(this.state.completed),
         retry_attempts: Array.from(this.state.retry_attempts.entries()).map(([id, entry]) => [
           id,
@@ -84,9 +90,6 @@ export class Orchestrator {
         codex_rate_limits?: unknown;
       };
 
-      if (Array.isArray(stateObj.claimed)) {
-        this.state.claimed = new Set(stateObj.claimed);
-      }
       if (Array.isArray(stateObj.completed)) {
         this.state.completed = new Set(stateObj.completed);
       }
@@ -101,6 +104,12 @@ export class Orchestrator {
           this.state.retry_attempts.set(id, newEntry);
         }
       }
+      // Derive `claimed` from authoritative state. After a restart
+      // there are no `running` entries, so any persisted claim that
+      // is not backed by a restored retry entry is stale and must
+      // not block dispatch. Older state files that include naked
+      // claimed IDs are silently dropped here.
+      this.state.claimed = new Set(this.state.retry_attempts.keys());
       if (stateObj.codex_totals) {
         this.state.codex_totals = stateObj.codex_totals;
       }

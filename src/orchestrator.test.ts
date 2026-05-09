@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -199,6 +199,160 @@ describe("orchestrator", () => {
     await new Promise((resolve) => setTimeout(resolve, 30));
 
     expect(cwd).toBe(path.join(root, "A"));
+    await orchestrator.stop();
+  });
+
+  it("loadState drops naked claimed IDs that have no backing retry entry", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-orch-"));
+    const workflowPath = path.join(root, "WORKFLOW.md");
+    await writeFile(
+      workflowPath,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: P\nagent:\n  max_concurrent_agents: 1\n---\nDo {{ issue.identifier }}",
+      "utf8"
+    );
+    const statePath = path.join(root, "orchestrator_state.json");
+    // Simulate the post-crash file: claimed without retry_attempts.
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        claimed: ["A"],
+        completed: [],
+        retry_attempts: [],
+        codex_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0, runtime_ms: 0 },
+        codex_rate_limits: null
+      }),
+      "utf8"
+    );
+    const config = configFor(root);
+    const tracker = new FakeTracker([issue("A")]);
+    let runs = 0;
+    const orchestrator = new Orchestrator(
+      workflowPath,
+      workflow(),
+      config,
+      tracker,
+      new WorkspaceManager(() => config, new MemoryLogger()),
+      () =>
+        new FakeRunner(() => {
+          runs += 1;
+        }),
+      new MemoryLogger()
+    );
+
+    await orchestrator.loadState(statePath);
+    expect(orchestrator.state.claimed.has("A")).toBe(false);
+
+    await orchestrator.tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(runs).toBe(1);
+    await orchestrator.stop();
+  });
+
+  it("loadState preserves claimed IDs that are backed by a retry entry", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-orch-"));
+    const workflowPath = path.join(root, "WORKFLOW.md");
+    await writeFile(
+      workflowPath,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: P\nagent:\n  max_concurrent_agents: 1\n---\nDo {{ issue.identifier }}",
+      "utf8"
+    );
+    const statePath = path.join(root, "orchestrator_state.json");
+    // A retry-backed claim must remain claimed so normal dispatch
+    // does not race the retry timer.
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        claimed: ["A"],
+        completed: [],
+        retry_attempts: [
+          [
+            "A",
+            {
+              issue_id: "A",
+              identifier: "A",
+              attempt: 1,
+              // Far in the future so the timer does not fire during the test.
+              due_at_ms: Date.now() + 60_000,
+              timer_handle: null,
+              error: "prior failure"
+            }
+          ]
+        ],
+        codex_totals: { input_tokens: 0, output_tokens: 0, total_tokens: 0, runtime_ms: 0 },
+        codex_rate_limits: null
+      }),
+      "utf8"
+    );
+    const config = configFor(root);
+    const tracker = new FakeTracker([issue("A")]);
+    let runs = 0;
+    const orchestrator = new Orchestrator(
+      workflowPath,
+      workflow(),
+      config,
+      tracker,
+      new WorkspaceManager(() => config, new MemoryLogger()),
+      () =>
+        new FakeRunner(() => {
+          runs += 1;
+        }),
+      new MemoryLogger()
+    );
+
+    await orchestrator.loadState(statePath);
+    expect(orchestrator.state.claimed.has("A")).toBe(true);
+    expect(orchestrator.state.retry_attempts.has("A")).toBe(true);
+
+    await orchestrator.tick();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // The normal dispatch path must not run while a retry is pending.
+    expect(runs).toBe(0);
+    await orchestrator.stop();
+  });
+
+  it("saveState does not persist naked claimed IDs without a backing retry entry", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "symphony-orch-"));
+    const workflowPath = path.join(root, "WORKFLOW.md");
+    await writeFile(
+      workflowPath,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: P\n---\nDo {{ issue.identifier }}",
+      "utf8"
+    );
+    const config = configFor(root);
+    const orchestrator = new Orchestrator(
+      workflowPath,
+      workflow(),
+      config,
+      new FakeTracker([]),
+      new WorkspaceManager(() => config, new MemoryLogger()),
+      () => new FakeRunner(() => undefined),
+      new MemoryLogger()
+    );
+    // Simulate a transient in-memory claim that is not retry-backed,
+    // such as a claim from a `dispatch` whose worker is still running.
+    orchestrator.state.claimed.add("A");
+
+    const statePath = path.join(root, "orchestrator_state.json");
+    await orchestrator.saveState(statePath);
+    const persisted = JSON.parse(await readFile(statePath, "utf8")) as { claimed: string[] };
+    expect(persisted.claimed).toEqual([]);
+
+    // A retry-backed claim must round-trip through the persisted file.
+    orchestrator.state.retry_attempts.set("B", {
+      issue_id: "B",
+      identifier: "B",
+      attempt: 1,
+      due_at_ms: Date.now() + 60_000,
+      timer_handle: null,
+      error: null
+    });
+    await orchestrator.saveState(statePath);
+    const persisted2 = JSON.parse(await readFile(statePath, "utf8")) as { claimed: string[] };
+    expect(persisted2.claimed).toEqual(["B"]);
+
+    // Clean up the retry timer registered through a hypothetical reload.
     await orchestrator.stop();
   });
 
