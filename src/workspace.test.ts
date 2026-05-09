@@ -331,7 +331,11 @@ describe("workspace management", () => {
     });
     expect(calls.initialize).toHaveLength(1);
     expect(calls.initialize[0]?.seedRoot).toBe(await realpath(seedRepo));
-    expect(calls.initialize[0]?.options).toMatchObject({ base: "develop", noVerify: true });
+    expect(calls.initialize[0]?.options).toMatchObject({
+      base: "develop",
+      force: true,
+      noVerify: true
+    });
     expect(calls.create).toHaveLength(1);
     expect(calls.create[0]?.options).toMatchObject({
       base: "develop",
@@ -339,8 +343,34 @@ describe("workspace management", () => {
       createdBy: "symphony",
       pathTemplate: expectedWorktree,
       branchTemplate: "symphony/FE-20",
+      allowDirtySeed: true,
       yes: true
     });
+  });
+
+  it("opts into mwt dirty-seed bypasses so auto-init and worktree creation can proceed", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    await initGitRepo(seedRepo);
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    config.repositories.local.init_if_missing = true;
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      createWorktreePath: (seedRoot, _taskName, options) =>
+        String(options?.pathTemplate ?? seedRoot)
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    await manager.ensureWorkspace({ ...makeIssue("FE-28"), labels: ["repo:frontend"] });
+
+    expect(calls.initialize[0]?.options).toMatchObject({ force: true });
+    expect(calls.create[0]?.options).toMatchObject({ allowDirtySeed: true });
   });
 
   it("does not pass mwt init noVerify when the seed has a verify script", async () => {

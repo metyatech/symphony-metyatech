@@ -247,6 +247,7 @@ export class WorkspaceManager {
       branchTemplate: string;
       allowNonSiblingWorktreePath: boolean;
       reuseExistingBranch: boolean;
+      allowDirtySeed: boolean;
       yes: boolean;
     } = {
       createdBy: "symphony",
@@ -254,6 +255,7 @@ export class WorkspaceManager {
       branchTemplate: branch,
       allowNonSiblingWorktreePath: true,
       reuseExistingBranch: true,
+      allowDirtySeed: true,
       yes: true
     };
     if (defaultBranch) {
@@ -306,7 +308,7 @@ export class WorkspaceManager {
     }
 
     const defaultBranch = this.repositoryDefaultBranch(selection);
-    const initOptions: { base?: string; noVerify?: boolean } = {};
+    const initOptions: { base?: string; force: boolean; noVerify?: boolean } = { force: true };
     if (defaultBranch) initOptions.base = defaultBranch;
     if (await this.shouldInitializeWithoutVerify(seedPath)) initOptions.noVerify = true;
     await this.mwt.initializeRepository(seedPath, initOptions);
