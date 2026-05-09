@@ -373,6 +373,73 @@ describe("workspace management", () => {
     expect(calls.create[0]?.options).toMatchObject({ allowDirtySeed: true });
   });
 
+  it("lets mwt create a new branch when the rendered local branch is missing", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    await initGitRepo(seedRepo);
+    await mkdir(path.join(seedRepo, ".mwt"), { recursive: true });
+    await writeFile(
+      path.join(seedRepo, ".mwt", "config.toml"),
+      'default_branch = "main"\n',
+      "utf8"
+    );
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      createWorktreePath: (seedRoot, _taskName, options) =>
+        String(options?.pathTemplate ?? seedRoot)
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    await manager.ensureWorkspace({ ...makeIssue("FE-29"), labels: ["repo:frontend"] });
+
+    expect(calls.localBranchExists).toEqual([
+      { seedRoot: await realpath(seedRepo), branch: "symphony/FE-29" }
+    ]);
+    expect(calls.create).toHaveLength(1);
+    expect(calls.create[0]?.options?.reuseExistingBranch).toBeUndefined();
+  });
+
+  it("passes mwt branch reuse only when the rendered local branch already exists", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    await initGitRepo(seedRepo);
+    await mkdir(path.join(seedRepo, ".mwt"), { recursive: true });
+    await writeFile(
+      path.join(seedRepo, ".mwt", "config.toml"),
+      'default_branch = "main"\n',
+      "utf8"
+    );
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      existingBranches: ["symphony/FE-30"],
+      createWorktreePath: (seedRoot, _taskName, options) =>
+        String(options?.pathTemplate ?? seedRoot)
+    });
+    const manager = new WorkspaceManager(() => config, new MemoryLogger(), mwt);
+
+    await manager.ensureWorkspace({ ...makeIssue("FE-30"), labels: ["repo:frontend"] });
+
+    expect(calls.localBranchExists).toEqual([
+      { seedRoot: await realpath(seedRepo), branch: "symphony/FE-30" }
+    ]);
+    expect(calls.create).toHaveLength(1);
+    expect(calls.create[0]?.options?.reuseExistingBranch).toBe(true);
+  });
+
   it("does not pass mwt init noVerify when the seed has a verify script", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
     const root = path.join(parent, "workspaces");
@@ -491,6 +558,7 @@ describe("workspace management", () => {
       created_now: false
     });
     expect(calls.create).toHaveLength(0);
+    expect(calls.localBranchExists).toHaveLength(0);
   });
 
   it("rejects an occupied mwt target path that is not a managed matching worktree", async () => {
@@ -664,21 +732,28 @@ interface MwtCallLog {
   initialize: Array<{ seedRoot: string; options: MwtInitializeOptions }>;
   create: Array<{ seedRoot: string; taskName: string; options: MwtCreateOptions }>;
   list: Array<{ seedRoot: string; options: MwtListOptions }>;
+  localBranchExists: Array<{ seedRoot: string; branch: string }>;
 }
 
 interface FakeMwtOptions {
   worktrees?: MwtListResult;
+  existingBranches?: string[];
   createWorktreePath?: (seedRoot: string, taskName: string, options: MwtCreateOptions) => string;
 }
 
 function createMwtCallLog(): MwtCallLog {
-  return { initialize: [], create: [], list: [] };
+  return { initialize: [], create: [], list: [], localBranchExists: [] };
 }
 
 function fakeMwtClient(calls: MwtCallLog, options: FakeMwtOptions = {}): MwtClient {
+  const existingBranches = new Set(options.existingBranches ?? []);
   return {
     loadConfig(seedRoot: string) {
       return Promise.resolve({ seedRoot });
+    },
+    localBranchExists(seedRoot: string, branch: string) {
+      calls.localBranchExists.push({ seedRoot, branch });
+      return Promise.resolve(existingBranches.has(branch));
     },
     initializeRepository(seedRoot: string, initOptions?: MwtInitializeOptions) {
       calls.initialize.push({ seedRoot, options: initOptions });
@@ -696,11 +771,14 @@ function fakeMwtClient(calls: MwtCallLog, options: FakeMwtOptions = {}): MwtClie
     },
     async createTaskWorktree(seedRoot: string, taskName: string, createOptions?: MwtCreateOptions) {
       calls.create.push({ seedRoot, taskName, options: createOptions });
+      const branch = createOptions?.branchTemplate ?? `symphony/${taskName}`;
+      if (createOptions?.reuseExistingBranch === true && !existingBranches.has(branch)) {
+        throw new Error(`Cannot reuse missing local branch: ${branch}`);
+      }
       const worktreePath = options.createWorktreePath
         ? options.createWorktreePath(seedRoot, taskName, createOptions)
         : String(createOptions?.pathTemplate ?? path.join(path.dirname(seedRoot), taskName));
       await mkdir(worktreePath, { recursive: true });
-      const branch = createOptions?.branchTemplate ?? `symphony/${taskName}`;
       const baseBranch = createOptions?.base ?? "main";
       const targetBranch = createOptions?.target ?? baseBranch;
       return {
