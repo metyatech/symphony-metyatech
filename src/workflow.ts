@@ -6,6 +6,7 @@ import { Liquid } from "liquidjs";
 import { SymphonyError } from "./errors.js";
 import type {
   Issue,
+  DashboardApiPort,
   RepoCheckout,
   RepositoriesConfig,
   ServiceConfig,
@@ -164,7 +165,7 @@ export function resolveServiceConfig(
       max_concurrent_agents_by_state: byState
     },
     server: {
-      port: getInteger(server.port, 3000) || null
+      port: resolveServerPort(server.port)
     },
     codex: {
       command: getString(codex.command, "codex app-server") ?? "codex app-server",
@@ -286,6 +287,29 @@ function resolveLocalIsolation(value: unknown): "none" | "mwt" {
   throw new SymphonyError(
     "config_validation_error",
     "repositories.local.isolation must be either 'none' or 'mwt'"
+  );
+}
+
+function resolveServerPort(value: unknown): DashboardApiPort {
+  if (value === undefined) return "auto";
+  if (value === null) return null;
+  if (typeof value === "string") {
+    if (value.trim() === "auto") return "auto";
+    throw invalidServerPortError();
+  }
+  if (typeof value === "number") {
+    if (!Number.isInteger(value) || value < 0 || value > 65535) {
+      throw invalidServerPortError();
+    }
+    return value === 0 ? null : value;
+  }
+  throw invalidServerPortError();
+}
+
+function invalidServerPortError(): SymphonyError {
+  return new SymphonyError(
+    "config_validation_error",
+    "server.port must be 'auto', null, 0, or an integer from 1 to 65535"
   );
 }
 

@@ -6,6 +6,7 @@ import {
   loadServiceConfig,
   loadWorkflow,
   renderPrompt,
+  resolveServiceConfig,
   selectRepositoriesForIssue,
   validateDispatchConfig
 } from "./workflow.js";
@@ -80,6 +81,57 @@ describe("workflow loading", () => {
 
     expect(config.workspace.root).toBe(path.resolve(dir, "explicit-workspaces"));
   });
+
+  it("defaults the dashboard API port to auto mode", () => {
+    const config = resolveServiceConfig({}, path.join(os.tmpdir(), "WORKFLOW.md"));
+
+    expect(config.server.port).toBe("auto");
+  });
+
+  it("parses explicit dashboard API auto mode", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(workflow, "---\nserver:\n  port: auto\n---\n", "utf8");
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.server.port).toBe("auto");
+  });
+
+  it("keeps an explicit fixed dashboard API port", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(workflow, "---\nserver:\n  port: 4321\n---\n", "utf8");
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.server.port).toBe(4321);
+  });
+
+  it("keeps legacy server.port 0 as dashboard API disabled", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(workflow, "---\nserver:\n  port: 0\n---\n", "utf8");
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.server.port).toBeNull();
+  });
+
+  it.each([
+    ["string port", '"3000"'],
+    ["unknown string", "localhost"],
+    ["negative port", "-1"],
+    ["non-integer port", "1.5"],
+    ["port above TCP range", "65536"]
+  ])("rejects invalid dashboard API %s", async (_name, value) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(workflow, `---\nserver:\n  port: ${value}\n---\n`, "utf8");
+
+    await expect(loadServiceConfig(workflow)).rejects.toThrow(/server\.port/);
+  });
+
   it("defaults file logging under workspace.root with bounded retention", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
     const workflow = path.join(dir, "WORKFLOW.md");

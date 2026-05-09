@@ -64,6 +64,8 @@ export interface RepoCheckout {
   created_now: boolean;
 }
 
+export type DashboardApiPort = number | "auto" | null;
+
 export interface ServiceConfig {
   workflowPath: string;
   workflowDir: string;
@@ -78,7 +80,7 @@ export interface ServiceConfig {
     terminal_states: string[];
   };
   polling: { interval_ms: number };
-  server: { port: number | null };
+  server: { port: DashboardApiPort };
   workspace: { root: string };
   logging: { file: LogFileConfig };
   repositories: RepositoriesConfig;
