@@ -120,7 +120,10 @@ For mwt-managed local isolation, set `repositories.local.isolation: mwt`.
 Symphony still selects a local seed checkout from `repositories.local.roots`,
 but Codex receives an issue-scoped managed worktree path instead of the seed
 checkout path. Symphony initializes missing `.mwt/config.toml` only when
-`init_if_missing` is `true`. If `init_no_verify` is also `true`, Symphony passes
+`init_if_missing` is `true`. Auto-initialization and worktree creation opt into
+mwt's dirty-seed bypasses so existing tracked edits in the seed checkout do not
+block dispatch; Symphony does not delete, reset, stash, or otherwise manage
+those edits. If `init_no_verify` is also `true`, Symphony passes
 `noVerify: true` only for seeds where mwt would not discover `scripts.verify` or
 a supported `scripts/verify.*` wrapper, so repositories with a real verify
 command keep mwt's verification path.
