@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import {
   createTaskWorktree,
   initializeRepository,
@@ -11,9 +12,11 @@ import type {
   InitResult,
   WorktreeListItem
 } from "@metyatech/managed-worktree-system";
+import { sanitizedProcessEnv } from "./process-safety.js";
 
 export interface MwtClient {
   loadConfig(seedRoot: string): Promise<Record<string, unknown>>;
+  localBranchExists(seedRoot: string, branch: string): Promise<boolean>;
   initializeRepository(
     seedRoot: string,
     options?: InitializeRepositoryOptions
@@ -28,7 +31,29 @@ export interface MwtClient {
 
 export const defaultMwtClient: MwtClient = {
   loadConfig,
+  localBranchExists,
   initializeRepository,
   createTaskWorktree,
   listWorktrees
 };
+
+function localBranchExists(seedRoot: string, branch: string): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "git",
+      ["-C", seedRoot, "show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+      {
+        cwd: seedRoot,
+        env: sanitizedProcessEnv(),
+        stdio: "ignore",
+        windowsHide: true
+      }
+    );
+    child.once("error", reject);
+    child.once("exit", (code) => {
+      if (code === 0) resolve(true);
+      else if (code === 1) resolve(false);
+      else reject(new Error(`git show-ref exited with code ${code ?? "null"}`));
+    });
+  });
+}

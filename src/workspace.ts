@@ -246,7 +246,7 @@ export class WorkspaceManager {
       pathTemplate: string;
       branchTemplate: string;
       allowNonSiblingWorktreePath: boolean;
-      reuseExistingBranch: boolean;
+      reuseExistingBranch?: boolean;
       allowDirtySeed: boolean;
       yes: boolean;
     } = {
@@ -254,10 +254,12 @@ export class WorkspaceManager {
       pathTemplate: repoPath,
       branchTemplate: branch,
       allowNonSiblingWorktreePath: true,
-      reuseExistingBranch: true,
       allowDirtySeed: true,
       yes: true
     };
+    if (await this.mwt.localBranchExists(seedPath, branch)) {
+      createOptions.reuseExistingBranch = true;
+    }
     if (defaultBranch) {
       createOptions.base = defaultBranch;
       createOptions.target = defaultBranch;
