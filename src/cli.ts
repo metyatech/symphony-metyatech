@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 try {
   process.loadEnvFile();
-} catch {
+} catch (error) {
+  void error;
   // ignore missing .env file
 }
 
@@ -50,7 +51,7 @@ const options = program.opts<{
   json?: boolean;
   quiet?: boolean;
 }>();
-const logger = new JsonLogger(options.quiet ?? false);
+let logger = new JsonLogger(options.quiet ?? false);
 
 try {
   const loaded = await loadServiceConfig(options.workflow);
@@ -69,6 +70,7 @@ try {
     );
     process.exit(0);
   }
+  logger = new JsonLogger(options.quiet ?? false, loaded.config.logging.file);
   const orchestratorRef: { current: Orchestrator | null } = { current: null };
   const workspaceRoot = loaded.config.workspace.root;
   const pidFile = join(workspaceRoot, ".symphony.pid");
@@ -79,7 +81,8 @@ try {
   try {
     await access(pidFile);
     pidFileExists = true;
-  } catch {
+  } catch (error) {
+    void error;
     // pid file does not exist yet
   }
 
@@ -89,13 +92,15 @@ try {
     try {
       process.kill(Number(existingPid), 0);
       isRunning = true;
-    } catch {
+    } catch (error) {
+      void error;
       // stale pid file from a previous crash
     }
     if (isRunning) {
       logger.error("startup_failed", {
         error: `Another instance of Symphony is already running for this workspace (PID: ${existingPid})`
       });
+      await logger.flush();
       process.exit(1);
     }
   }
@@ -105,7 +110,8 @@ try {
   const removePidFile = (): void => {
     try {
       unlinkSync(pidFile);
-    } catch {
+    } catch (error) {
+      void error;
       // ignore cleanup errors
     }
   };
@@ -142,7 +148,9 @@ try {
 
   // Auto-save state periodically
   setInterval(() => {
-    orchestrator.saveState(stateFile).catch(() => {});
+    orchestrator.saveState(stateFile).catch((error: unknown) => {
+      void error;
+    });
   }, 10000);
 
   let server: Server | null = null;
@@ -160,6 +168,7 @@ try {
     void orchestrator
       .stop()
       .then(() => orchestrator.saveState(stateFile))
+      .then(() => logger.flush())
       .then(() => process.exit(0));
   };
   process.once("SIGINT", stop);
@@ -167,5 +176,6 @@ try {
   await orchestrator.start();
 } catch (error) {
   logger.error("startup_failed", { error: error instanceof Error ? error.message : String(error) });
+  await logger.flush();
   process.exit(1);
 }
