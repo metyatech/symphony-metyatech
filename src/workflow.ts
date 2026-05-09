@@ -18,6 +18,8 @@ const DEFAULT_LABEL_PREFIX = "repo:";
 const DEFAULT_REPO_BASE_URL = "https://github.com";
 const DEFAULT_MWT_BRANCH_TEMPLATE = "symphony/{{ issue.identifier }}";
 const DEFAULT_MWT_PATH_TEMPLATE = "{{ workspace }}/{{ repo }}";
+const DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024;
+const DEFAULT_LOG_MAX_FILES = 5;
 
 export async function loadWorkflow(
   workflowPath?: string
@@ -92,6 +94,7 @@ export function resolveServiceConfig(
   const polling = getRecord(raw.polling);
   const server = getRecord(raw.server);
   const workspace = getRecord(raw.workspace);
+  const logging = getRecord(raw.logging);
   const hooks = getRecord(raw.hooks);
   const agent = getRecord(raw.agent);
   const codex = getRecord(raw.codex);
@@ -113,6 +116,10 @@ export function resolveServiceConfig(
   const defaultWorkspaceRoot = path.join(os.tmpdir(), "symphony_workspaces");
   const workspaceRoot =
     getString(workspace.root, getString(raw.workspaces_root, null)) ?? defaultWorkspaceRoot;
+  const resolvedWorkspaceRoot = resolvePathValue(workspaceRoot, workflowDir);
+  const loggingFile = getRecord(logging.file);
+  const defaultLogPath = path.join(resolvedWorkspaceRoot, ".symphony", "logs", "symphony.log");
+  const logPath = getTrimmedString(loggingFile.path, defaultLogPath) ?? defaultLogPath;
 
   return {
     workflowPath: path.resolve(workflowPath),
@@ -131,7 +138,15 @@ export function resolveServiceConfig(
     },
     polling: { interval_ms: getInteger(polling.interval_ms, 30000) },
     workspace: {
-      root: resolvePathValue(workspaceRoot, workflowDir)
+      root: resolvedWorkspaceRoot
+    },
+    logging: {
+      file: {
+        enabled: typeof loggingFile.enabled === "boolean" ? loggingFile.enabled : true,
+        path: resolvePathValue(logPath, resolvedWorkspaceRoot),
+        max_bytes: getInteger(loggingFile.max_bytes, DEFAULT_LOG_MAX_BYTES),
+        max_files: getInteger(loggingFile.max_files, DEFAULT_LOG_MAX_FILES)
+      }
     },
     repositories: resolveRepositoriesConfig(repositories, workflowDir),
     hooks: {
@@ -179,6 +194,10 @@ export function validateDispatchConfig(config: ServiceConfig): void {
     throw new SymphonyError("config_validation_error", "polling.interval_ms must be positive");
   if (config.hooks.timeout_ms <= 0)
     throw new SymphonyError("config_validation_error", "hooks.timeout_ms must be positive");
+  if (config.logging.file.max_bytes <= 0)
+    throw new SymphonyError("config_validation_error", "logging.file.max_bytes must be positive");
+  if (config.logging.file.max_files <= 0)
+    throw new SymphonyError("config_validation_error", "logging.file.max_files must be positive");
   if (config.agent.max_concurrent_agents <= 0)
     throw new SymphonyError(
       "config_validation_error",

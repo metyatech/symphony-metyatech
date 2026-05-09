@@ -828,6 +828,14 @@ function configFor(root: string, afterCreate: string | null): ServiceConfig {
     polling: { interval_ms: 30000 },
     server: { port: null },
     workspace: { root },
+    logging: {
+      file: {
+        enabled: false,
+        path: path.join(root, ".symphony", "logs", "symphony.log"),
+        max_bytes: 1024,
+        max_files: 2
+      }
+    },
     repositories: {
       owner: null,
       base_url: "https://github.com",

@@ -142,6 +142,14 @@ function configForScope(project_slug: string | null, trigger_label: string | nul
     polling: { interval_ms: 30000 },
     server: { port: null },
     workspace: { root: "/tmp/workspaces" },
+    logging: {
+      file: {
+        enabled: false,
+        path: "/tmp/workspaces/.symphony/logs/symphony.log",
+        max_bytes: 1024,
+        max_files: 2
+      }
+    },
     repositories: {
       owner: null,
       base_url: "https://github.com",

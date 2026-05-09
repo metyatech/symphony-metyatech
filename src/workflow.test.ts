@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -79,6 +79,105 @@ describe("workflow loading", () => {
     const { config } = await loadServiceConfig(workflow);
 
     expect(config.workspace.root).toBe(path.resolve(dir, "explicit-workspaces"));
+  });
+  it("defaults file logging under workspace.root with bounded retention", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: DEMO\nworkspace:\n  root: ./work\n---\n",
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.logging.file).toEqual({
+      enabled: true,
+      path: path.resolve(dir, "work", ".symphony", "logs", "symphony.log"),
+      max_bytes: 10 * 1024 * 1024,
+      max_files: 5
+    });
+  });
+
+  it("parses file logging opt-out and retention tuning", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      [
+        "---",
+        "tracker:",
+        "  kind: linear",
+        "  api_key: x",
+        "  team: DEMO",
+        "workspace:",
+        "  root: ./work",
+        "logging:",
+        "  file:",
+        "    enabled: false",
+        "    path: logs/custom.log",
+        "    max_bytes: 2048",
+        "    max_files: 7",
+        "---"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(config.logging.file).toEqual({
+      enabled: false,
+      path: path.resolve(dir, "work", "logs", "custom.log"),
+      max_bytes: 2048,
+      max_files: 7
+    });
+  });
+
+  it.each([
+    ["max_bytes", 0, /logging\.file\.max_bytes/],
+    ["max_bytes", -1, /logging\.file\.max_bytes/],
+    ["max_files", 0, /logging\.file\.max_files/],
+    ["max_files", -1, /logging\.file\.max_files/]
+  ])("rejects invalid logging.file.%s bounds during validation", async (field, value, message) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      [
+        "---",
+        "tracker:",
+        "  kind: linear",
+        "  api_key: x",
+        "  team: DEMO",
+        "logging:",
+        "  file:",
+        `    ${field}: ${value}`,
+        "---"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+
+    expect(() => validateDispatchConfig(config)).toThrow(message);
+  });
+
+  it("validates config without creating log directories or files", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "symphony-test-"));
+    const workflow = path.join(dir, "WORKFLOW.md");
+    await writeFile(
+      workflow,
+      "---\ntracker:\n  kind: linear\n  api_key: x\n  team: DEMO\nworkspace:\n  root: ./work\n---\n",
+      "utf8"
+    );
+
+    const { config } = await loadServiceConfig(workflow);
+    validateDispatchConfig(config);
+
+    await expect(access(path.dirname(config.logging.file.path))).rejects.toMatchObject({
+      code: "ENOENT"
+    });
+    await expect(access(config.logging.file.path)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("parses normalized tracker project slug and trigger label", async () => {

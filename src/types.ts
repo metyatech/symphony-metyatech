@@ -50,6 +50,13 @@ export interface RepositoriesConfig {
   };
 }
 
+export interface LogFileConfig {
+  enabled: boolean;
+  path: string;
+  max_bytes: number;
+  max_files: number;
+}
+
 export interface RepoCheckout {
   name: string;
   path: string;
@@ -73,6 +80,7 @@ export interface ServiceConfig {
   polling: { interval_ms: number };
   server: { port: number | null };
   workspace: { root: string };
+  logging: { file: LogFileConfig };
   repositories: RepositoriesConfig;
   hooks: {
     after_create: string | null;
