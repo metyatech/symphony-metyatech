@@ -48,6 +48,11 @@ Start the service:
 LINEAR_API_KEY=lin_api_xxx symphony --workflow ./WORKFLOW.md
 ```
 
+By default, every structured JSON log line emitted to stderr is also saved to a
+**bounded rotating log file** at `<workspace.root>/.symphony/logs/symphony.log`.
+Use `--quiet` to suppress informational log lines on stderr and in the log file;
+warnings and errors are still emitted and persisted.
+
 Machine-readable validation output:
 
 ```sh
@@ -59,6 +64,32 @@ LINEAR_API_KEY=lin_api_xxx symphony --workflow ./WORKFLOW.md --check --json
 `WORKFLOW.md` supports optional YAML front matter and a strict Liquid-compatible prompt body. Unknown template variables and filters fail the affected run attempt. Relative `workspace.root` values resolve relative to the workflow file directory, and `$VAR_NAME` indirection is resolved only where the spec allows it. If `workspace.root` is absent, top-level `workspaces_root` is accepted as a workflow-directory-relative compatibility alias; `workspace.root` always takes precedence when both are present.
 
 Required dispatch fields are `tracker.kind`, `tracker.api_key`, `tracker.team`, and `codex.command`. `tracker.project_slug` and `tracker.trigger_label` are optional scoping fields. Defaults follow the upstream Symphony specification for polling interval, active and terminal states, hook timeout, concurrency, retry backoff, and Codex timeouts.
+
+### File logging
+
+File logging is **enabled by default** for long-running service starts. Configure
+it under `logging.file`:
+
+```yaml
+logging:
+  file:
+    enabled: true
+    path: .symphony/logs/symphony.log
+    max_bytes: 10485760
+    max_files: 5
+```
+
+- `enabled`: set to `false` to opt out and keep stderr-only logging.
+- `path`: relative values resolve **under `workspace.root`**. The default is
+  `.symphony/logs/symphony.log` inside that root.
+- `max_bytes`: active file limit. Symphony rotates before appending a line that
+  would exceed this value.
+- `max_files`: total retained files, including the active file. For example,
+  `max_files: 5` keeps `symphony.log` plus `.1` through `.4`.
+
+`symphony --check` and `symphony --check --json` validate logging configuration
+without creating log directories or files. **Restart Symphony after changing
+`logging.file` settings**; running services do not reload them dynamically.
 
 Linear issue scope is controlled by `tracker.team`, `tracker.active_states`, optional `tracker.project_slug`, and optional `tracker.trigger_label`. When `project_slug` or `trigger_label` is configured, Symphony applies both Linear query filters and local eligibility checks so issues outside the configured project or missing the trigger label are not dispatched or continued. Slugs and labels are normalized case-insensitively.
 
@@ -233,7 +264,22 @@ Hook failures in `after_create` and `before_run` fail the affected run; `after_r
 
 ## Implementation-Defined Policy
 
-This implementation uses structured JSON logs on stderr as the status surface. It does not provide a web UI. It treats Codex approval, thread sandbox, and turn sandbox values as pass-through fields from workflow configuration. User-input-required events are not satisfied by Symphony; runs rely on the configured Codex app-server behavior and fail on process errors, turn timeouts, or cancellation.
+This implementation uses structured JSON logs on stderr as the status surface and
+persists the **same emitted lines** to the configured rotating log file when file
+logging is enabled. Rotation happens before appending a line that would exceed
+`logging.file.max_bytes`; Symphony keeps at most `logging.file.max_files` files,
+including the active file.
+
+Log persistence failures are **non-fatal**: Symphony keeps running and emits one
+safe warning to stderr without recursively attempting to save that warning to the
+failed log file. The warning omits file paths and original error messages to
+avoid leaking local or secret-bearing details.
+
+Symphony does not provide a web UI. It treats Codex approval, thread sandbox, and
+turn sandbox values as pass-through fields from workflow configuration.
+User-input-required events are not satisfied by Symphony; runs rely on the
+configured Codex app-server behavior and fail on process errors, turn timeouts,
+or cancellation.
 
 Child processes (hooks and Codex) receive a scrubbed environment that removes parent-process variables whose names look secret-like (`api_key`, `token`, `secret`, `password`, `credential`, `authorization`). Issue fields exported via `SYMPHONY_*` are not redacted; do not place secrets in tracker fields. Codex stderr and runtime messages are redacted before they are written to structured logs.
 
