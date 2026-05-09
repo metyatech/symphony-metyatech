@@ -348,6 +348,155 @@ describe("workspace management", () => {
     });
   });
 
+  it("logs workspace preparation progress through mwt worktree creation", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "XroidVerse");
+    await initGitRepo(seedRepo);
+    await mkdir(path.join(seedRepo, ".mwt"), { recursive: true });
+    await writeFile(
+      path.join(seedRepo, ".mwt", "config.toml"),
+      'default_branch = "main"\n',
+      "utf8"
+    );
+    const config = configFor(root, null);
+    config.repositories.owner = "Verseday";
+    config.repositories.base_url = "https://lin_api_should_not_leak@example.invalid";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    config.repositories.local.overrides.set("Verseday/XroidVerse", { default_branch: "develop" });
+    const calls = createMwtCallLog();
+    const mwt = fakeMwtClient(calls, {
+      createWorktreePath: (_seedRoot, _taskName, options) => String(options?.pathTemplate)
+    });
+    const logger = new MemoryLogger();
+    const manager = new WorkspaceManager(() => config, logger, mwt);
+
+    const workspace = await manager.ensureWorkspace({
+      ...makeIssue("FE-31"),
+      labels: ["repo:Verseday/XroidVerse"]
+    });
+
+    const events = logger.entries.map((entry) => entry.event);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        "workspace_prepare_started",
+        "repo_selection_resolved",
+        "repo_local_checkout_resolved",
+        "repo_mwt_create_started",
+        "repo_mwt_worktree_created",
+        "workspace_prepare_finished"
+      ])
+    );
+    expect(events.indexOf("workspace_prepare_started")).toBeLessThan(
+      events.indexOf("repo_selection_resolved")
+    );
+    expect(events.indexOf("repo_mwt_create_started")).toBeLessThan(
+      events.indexOf("repo_mwt_worktree_created")
+    );
+    expect(events.indexOf("repo_mwt_worktree_created")).toBeLessThan(
+      events.indexOf("workspace_prepare_finished")
+    );
+    const expectedSeedPath = await realpath(seedRepo);
+    const expectedWorktree = path.join(workspace.path, "XroidVerse");
+    expect(logFields(logger, "workspace_prepare_started")).toMatchObject({
+      identifier: "FE-31",
+      issue_id: "FE-31",
+      workspace_path: workspace.path,
+      workspace_key: "FE-31"
+    });
+    expect(logFields(logger, "repo_selection_resolved")).toMatchObject({
+      identifier: "FE-31",
+      issue_id: "FE-31",
+      selected_count: 1,
+      repos: [
+        {
+          owner: "Verseday",
+          name: "XroidVerse"
+        }
+      ]
+    });
+    expect(logFields(logger, "repo_mwt_create_started")).toMatchObject({
+      repo: "XroidVerse",
+      owner: "Verseday",
+      seed_path: expectedSeedPath,
+      path: expectedWorktree,
+      branch: "symphony/FE-31",
+      base: "develop",
+      target: "develop",
+      identifier: "FE-31",
+      issue_id: "FE-31"
+    });
+    expect(logFields(logger, "repo_mwt_create_started")).not.toHaveProperty("url");
+    expect(logFields(logger, "workspace_prepare_finished")).toMatchObject({
+      identifier: "FE-31",
+      issue_id: "FE-31",
+      workspace_path: workspace.path,
+      workspace_key: "FE-31",
+      created_now: true,
+      repo_count: 1
+    });
+    expect(JSON.stringify(logger.entries)).not.toContain("lin_api_should_not_leak");
+  });
+
+  it("logs mwt create failures during workspace preparation", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
+    const root = path.join(parent, "workspaces");
+    const localRoot = path.join(parent, "ghws");
+    const seedRepo = path.join(localRoot, "frontend");
+    await initGitRepo(seedRepo);
+    await mkdir(path.join(seedRepo, ".mwt"), { recursive: true });
+    await writeFile(
+      path.join(seedRepo, ".mwt", "config.toml"),
+      'default_branch = "main"\n',
+      "utf8"
+    );
+    const config = configFor(root, null);
+    config.repositories.owner = "metyatech";
+    config.repositories.base_url = "https://lin_api_should_not_leak@example.invalid";
+    config.repositories.local.prefer_existing = true;
+    config.repositories.local.roots = [localRoot];
+    config.repositories.local.isolation = "mwt";
+    const calls = createMwtCallLog();
+    const logger = new MemoryLogger();
+    const manager = new WorkspaceManager(
+      () => config,
+      logger,
+      fakeMwtClient(calls, { createError: new Error("mwt create boom lin_api_secret") })
+    );
+
+    await expect(
+      manager.ensureWorkspace({ ...makeIssue("FE-32"), labels: ["repo:frontend"] })
+    ).rejects.toThrow("mwt create boom");
+
+    const expectedSeedPath = await realpath(seedRepo);
+    expect(calls.create).toHaveLength(1);
+    expect(logEntry(logger, "repo_mwt_create_failed")?.level).toBe("error");
+    expect(logFields(logger, "repo_mwt_create_failed")).toMatchObject({
+      repo: "frontend",
+      owner: "metyatech",
+      seed_path: expectedSeedPath,
+      path: path.join(root, "FE-32", "frontend"),
+      branch: "symphony/FE-32",
+      identifier: "FE-32",
+      issue_id: "FE-32",
+      error: "mwt create boom [REDACTED]"
+    });
+    expect(logFields(logger, "repo_mwt_create_failed")).not.toHaveProperty("url");
+    expect(logEntry(logger, "workspace_prepare_failed")?.level).toBe("error");
+    expect(logFields(logger, "workspace_prepare_failed")).toMatchObject({
+      identifier: "FE-32",
+      issue_id: "FE-32",
+      workspace_path: path.join(root, "FE-32"),
+      workspace_key: "FE-32",
+      error: "mwt create boom [REDACTED]"
+    });
+    expect(JSON.stringify(logger.entries)).not.toContain("lin_api_secret");
+    expect(JSON.stringify(logger.entries)).not.toContain("lin_api_should_not_leak");
+  });
+
   it("opts into mwt dirty-seed bypasses so auto-init and worktree creation can proceed", async () => {
     const parent = await mkdtemp(path.join(os.tmpdir(), "symphony-mwt-repos-"));
     const root = path.join(parent, "workspaces");
@@ -739,6 +888,7 @@ interface FakeMwtOptions {
   worktrees?: MwtListResult;
   existingBranches?: string[];
   createWorktreePath?: (seedRoot: string, taskName: string, options: MwtCreateOptions) => string;
+  createError?: Error;
 }
 
 function createMwtCallLog(): MwtCallLog {
@@ -771,6 +921,7 @@ function fakeMwtClient(calls: MwtCallLog, options: FakeMwtOptions = {}): MwtClie
     },
     async createTaskWorktree(seedRoot: string, taskName: string, createOptions?: MwtCreateOptions) {
       calls.create.push({ seedRoot, taskName, options: createOptions });
+      if (options.createError) throw options.createError;
       const branch = createOptions?.branchTemplate ?? `symphony/${taskName}`;
       if (createOptions?.reuseExistingBranch === true && !existingBranches.has(branch)) {
         throw new Error(`Cannot reuse missing local branch: ${branch}`);
@@ -811,6 +962,19 @@ function fakeMwtClient(calls: MwtCallLog, options: FakeMwtOptions = {}): MwtClie
       return Promise.resolve(options.worktrees ?? []);
     }
   };
+}
+
+function logEntry(
+  logger: MemoryLogger,
+  event: string
+): MemoryLogger["entries"][number] | undefined {
+  return logger.entries.find((entry) => entry.event === event);
+}
+
+function logFields(logger: MemoryLogger, event: string): Record<string, unknown> {
+  const entry = logEntry(logger, event);
+  expect(entry).toBeDefined();
+  return entry!.fields;
 }
 
 function mwtListItem(worktreePath: string, branch: string): MwtListResult[number] {

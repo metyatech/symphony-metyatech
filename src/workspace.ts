@@ -3,7 +3,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { SymphonyError, messageFromUnknown } from "./errors.js";
 import { defaultMwtClient, type MwtClient } from "./mwt-adapter.js";
-import { sanitizedProcessEnv } from "./process-safety.js";
+import { redactSecrets, sanitizedProcessEnv } from "./process-safety.js";
 import { selectRepositoriesForIssue } from "./workflow.js";
 import type { Issue, Logger, RepoCheckout, ServiceConfig, Workspace } from "./types.js";
 
@@ -104,27 +104,52 @@ export class WorkspaceManager {
   async ensureWorkspace(issue: Issue): Promise<Workspace> {
     const config = this.getConfig();
     const { path: workspacePath, workspace_key } = this.workspaceFor(issue.identifier);
-    ensureInsideRoot(config.workspace.root, workspacePath);
-    await mkdir(config.workspace.root, { recursive: true });
-    let created = false;
+    this.logger.info("workspace_prepare_started", {
+      identifier: issue.identifier,
+      issue_id: issue.id,
+      workspace_path: workspacePath,
+      workspace_key
+    });
     try {
-      await mkdir(workspacePath, { recursive: false });
-      created = true;
+      ensureInsideRoot(config.workspace.root, workspacePath);
+      await mkdir(config.workspace.root, { recursive: true });
+      let created = false;
+      try {
+        await mkdir(workspacePath, { recursive: false });
+        created = true;
+      } catch (error) {
+        if (!isAlreadyExistsError(error)) throw error;
+      }
+      await ensureRealDirectoryInsideRoot(config.workspace.root, workspacePath);
+      const repositories = await this.ensureRepoCheckouts(issue, workspacePath);
+      const workspace: Workspace = {
+        path: workspacePath,
+        workspace_key,
+        created_now: created,
+        repositories
+      };
+      if (created && config.hooks.after_create) {
+        await this.runHook("after_create", config.hooks.after_create, issue, workspace, true);
+      }
+      this.logger.info("workspace_prepare_finished", {
+        identifier: issue.identifier,
+        issue_id: issue.id,
+        workspace_path: workspacePath,
+        workspace_key,
+        created_now: created,
+        repo_count: repositories.length
+      });
+      return workspace;
     } catch (error) {
-      if (!isAlreadyExistsError(error)) throw error;
+      this.logger.error("workspace_prepare_failed", {
+        identifier: issue.identifier,
+        issue_id: issue.id,
+        workspace_path: workspacePath,
+        workspace_key,
+        error: safeErrorMessage(error)
+      });
+      throw error;
     }
-    await ensureRealDirectoryInsideRoot(config.workspace.root, workspacePath);
-    const repositories = await this.ensureRepoCheckouts(issue, workspacePath);
-    const workspace: Workspace = {
-      path: workspacePath,
-      workspace_key,
-      created_now: created,
-      repositories
-    };
-    if (created && config.hooks.after_create) {
-      await this.runHook("after_create", config.hooks.after_create, issue, workspace, true);
-    }
-    return workspace;
   }
 
   /**
@@ -138,6 +163,15 @@ export class WorkspaceManager {
   private async ensureRepoCheckouts(issue: Issue, workspacePath: string): Promise<RepoCheckout[]> {
     const config = this.getConfig();
     const selections = selectRepositoriesForIssue(config, issue);
+    this.logger.info("repo_selection_resolved", {
+      identifier: issue.identifier,
+      issue_id: issue.id,
+      selected_count: selections.length,
+      repos: selections.map((selection) => ({
+        owner: selection.owner,
+        name: selection.name
+      }))
+    });
     if (selections.length === 0) {
       if (config.repositories.required) {
         throw new SymphonyError(
@@ -151,6 +185,14 @@ export class WorkspaceManager {
     for (const selection of selections) {
       const localPath = await this.findLocalCheckout(selection.name);
       if (localPath) {
+        this.logger.info("repo_local_checkout_resolved", {
+          repo: selection.name,
+          owner: selection.owner,
+          path: localPath,
+          isolation: config.repositories.local.isolation,
+          identifier: issue.identifier,
+          issue_id: issue.id
+        });
         if (config.repositories.local.isolation === "mwt") {
           checkouts.push(await this.ensureMwtCheckout(selection, issue, workspacePath, localPath));
         } else {
@@ -162,9 +204,10 @@ export class WorkspaceManager {
           });
           this.logger.info("repo_local_checkout_selected", {
             repo: selection.name,
-            url: selection.url,
+            owner: selection.owner,
             path: localPath,
-            identifier: issue.identifier
+            identifier: issue.identifier,
+            issue_id: issue.id
           });
         }
         continue;
@@ -172,6 +215,14 @@ export class WorkspaceManager {
       const repoPath = path.resolve(workspacePath, selection.name);
       ensureInsideRoot(workspacePath, repoPath);
       const exists = await pathExists(repoPath);
+      this.logger.info("repo_workspace_checkout_resolved", {
+        repo: selection.name,
+        owner: selection.owner,
+        path: repoPath,
+        exists,
+        identifier: issue.identifier,
+        issue_id: issue.id
+      });
       if (!exists) {
         await mkdir(path.dirname(repoPath), { recursive: true });
         await runShell(
@@ -181,9 +232,10 @@ export class WorkspaceManager {
         );
         this.logger.info("repo_cloned", {
           repo: selection.name,
-          url: selection.url,
+          owner: selection.owner,
           path: repoPath,
-          identifier: issue.identifier
+          identifier: issue.identifier,
+          issue_id: issue.id
         });
       }
       checkouts.push({
@@ -222,11 +274,11 @@ export class WorkspaceManager {
       this.logger.info("repo_mwt_worktree_reused", {
         repo: selection.name,
         owner: selection.owner,
-        url: selection.url,
         seed_path: seedPath,
         path: reusable,
         branch,
-        identifier: issue.identifier
+        identifier: issue.identifier,
+        issue_id: issue.id
       });
       return { name: selection.name, path: reusable, url: selection.url, created_now: false };
     }
@@ -264,7 +316,34 @@ export class WorkspaceManager {
       createOptions.base = defaultBranch;
       createOptions.target = defaultBranch;
     }
-    const created = await this.mwt.createTaskWorktree(seedPath, issue.identifier, createOptions);
+    this.logger.info("repo_mwt_create_started", {
+      repo: selection.name,
+      owner: selection.owner,
+      seed_path: seedPath,
+      path: repoPath,
+      branch,
+      base: createOptions.base,
+      target: createOptions.target,
+      reuse_existing_branch: createOptions.reuseExistingBranch === true,
+      identifier: issue.identifier,
+      issue_id: issue.id
+    });
+    let created: Awaited<ReturnType<MwtClient["createTaskWorktree"]>>;
+    try {
+      created = await this.mwt.createTaskWorktree(seedPath, issue.identifier, createOptions);
+    } catch (error) {
+      this.logger.error("repo_mwt_create_failed", {
+        repo: selection.name,
+        owner: selection.owner,
+        seed_path: seedPath,
+        path: repoPath,
+        branch,
+        identifier: issue.identifier,
+        issue_id: issue.id,
+        error: safeErrorMessage(error)
+      });
+      throw error;
+    }
     const createdPath = path.resolve(created.worktreePath);
     ensureInsideRoot(workspacePath, createdPath);
     if (!sameRealPath(path.resolve(repoPath), createdPath)) {
@@ -282,11 +361,11 @@ export class WorkspaceManager {
     this.logger.info("repo_mwt_worktree_created", {
       repo: selection.name,
       owner: selection.owner,
-      url: selection.url,
       seed_path: seedPath,
       path: createdPath,
       branch,
-      identifier: issue.identifier
+      identifier: issue.identifier,
+      issue_id: issue.id
     });
     return { name: selection.name, path: createdPath, url: selection.url, created_now: true };
   }
@@ -443,7 +522,7 @@ export class WorkspaceManager {
         this.logger.warn("workspace_cleanup_retained", {
           workspace_path: workspacePath,
           identifier: issue.identifier,
-          error: messageFromUnknown(error),
+          error: safeErrorMessage(error),
           reason: "could not safely enumerate mwt worktrees"
         });
         return;
@@ -499,11 +578,15 @@ export class WorkspaceManager {
       this.logger.warn("hook_failed", {
         hook: name,
         cwd: workspace.path,
-        error: messageFromUnknown(error)
+        error: safeErrorMessage(error)
       });
       if (fatal) throw new SymphonyError("hook_failed", `${name} hook failed`, error);
     }
   }
+}
+
+function safeErrorMessage(error: unknown): string {
+  return redactSecrets(messageFromUnknown(error));
 }
 
 function renderMwtBranchTemplate(
