@@ -91,6 +91,50 @@ logging:
 without creating log directories or files. **Restart Symphony after changing
 `logging.file` settings**; running services do not reload them dynamically.
 
+### Dashboard API
+
+Symphony starts the dashboard API by default on an OS-assigned dynamic port. On
+successful startup, the structured log event `dashboard_api_started` includes
+both the actual port and a ready-to-open URL:
+
+```json
+{ "event": "dashboard_api_started", "port": 51234, "url": "http://localhost:51234" }
+```
+
+Use `server.port: auto` to make the dynamic behavior explicit, or set a fixed
+port from `1` through `65535` when your environment requires a stable endpoint:
+
+```yaml
+server:
+  port: auto # default; binds with port 0 and reports the actual port
+```
+
+```yaml
+server:
+  port: 4242 # fixed override
+```
+
+For backward compatibility, `server.port: 0` disables the dashboard API. A YAML
+`null` value also disables it; other strings, negative numbers, non-integers,
+and values above `65535` are rejected during configuration loading.
+
+After the API binds, Symphony writes machine-readable discovery metadata to
+`<workspace.root>/.symphony/dashboard-api.json`:
+
+```json
+{
+  "pid": 12345,
+  "port": 51234,
+  "url": "http://localhost:51234",
+  "started_at": "2026-01-02T03:04:05.000Z"
+}
+```
+
+The discovery file is removed when the dashboard API is disabled and during
+normal Symphony shutdown. `--quiet` suppresses informational log output,
+including `dashboard_api_started`, but the discovery file is still written when
+the API starts.
+
 Linear issue scope is controlled by `tracker.team`, `tracker.active_states`, optional `tracker.project_slug`, and optional `tracker.trigger_label`. When `project_slug` or `trigger_label` is configured, Symphony applies both Linear query filters and local eligibility checks so issues outside the configured project or missing the trigger label are not dispatched or continued. Slugs and labels are normalized case-insensitively.
 
 ## Multi-Repository Workspaces
