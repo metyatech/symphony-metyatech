@@ -9,10 +9,14 @@ try {
 import { Command } from "commander";
 import { unlinkSync } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import type { Server } from "node:http";
 import { join } from "node:path";
 import { createDashboardApi } from "./api.js";
 import { CodexRunner } from "./codex-runner.js";
+import {
+  removeDashboardApiDiscovery,
+  startDashboardApi,
+  type DashboardApiHandle
+} from "./dashboard-api.js";
 import { JsonLogger } from "./logger.js";
 import { Orchestrator } from "./orchestrator.js";
 import { LinearClient } from "./tracker.js";
@@ -52,6 +56,7 @@ const options = program.opts<{
   quiet?: boolean;
 }>();
 let logger = new JsonLogger(options.quiet ?? false);
+let dashboardApi: DashboardApiHandle | null = null;
 
 try {
   const loaded = await loadServiceConfig(options.workflow);
@@ -153,29 +158,51 @@ try {
     });
   }, 10000);
 
-  let server: Server | null = null;
   if (loaded.config.server.port !== null) {
     const apiApp = createDashboardApi(orchestrator);
-    const port = loaded.config.server.port;
-    server = apiApp.listen(port, () => {
-      logger.info("dashboard_api_started", { port });
+    dashboardApi = await startDashboardApi({
+      app: apiApp,
+      port: loaded.config.server.port,
+      workspaceRoot,
+      logger
     });
+  } else {
+    await removeDashboardApiDiscovery(workspaceRoot);
   }
 
+  let stopping = false;
   const stop = () => {
+    if (stopping) return;
+    stopping = true;
     logger.info("service_stopping", {});
-    server?.close();
     void orchestrator
       .stop()
+      .finally(() => dashboardApi?.close())
       .then(() => orchestrator.saveState(stateFile))
       .then(() => logger.flush())
-      .then(() => process.exit(0));
+      .then(() => process.exit(0))
+      .catch(async (shutdownError: unknown) => {
+        logger.error("shutdown_failed", { error: messageFromUnknown(shutdownError) });
+        await logger.flush();
+        process.exit(1);
+      });
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
   await orchestrator.start();
 } catch (error) {
-  logger.error("startup_failed", { error: error instanceof Error ? error.message : String(error) });
+  if (dashboardApi !== null) {
+    try {
+      await dashboardApi.close();
+    } catch (cleanupError) {
+      logger.warn("dashboard_api_cleanup_failed", { error: messageFromUnknown(cleanupError) });
+    }
+  }
+  logger.error("startup_failed", { error: messageFromUnknown(error) });
   await logger.flush();
   process.exit(1);
+}
+
+function messageFromUnknown(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
