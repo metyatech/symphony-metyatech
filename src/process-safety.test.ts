@@ -12,8 +12,10 @@ describe("process safety", () => {
   });
 
   it("redacts secret-like output values", () => {
-    expect(redactSecrets("token lin_api_secret and Bearer abc.def")).toBe(
-      "token [REDACTED] and [REDACTED]"
-    );
+    expect(
+      redactSecrets(
+        "token lin_api_secret and Bearer abc.def in https://user:ghp_secret@example.com/repo.git"
+      )
+    ).toBe("token [REDACTED] and [REDACTED] in https://[REDACTED]@example.com/repo.git");
   });
 });
