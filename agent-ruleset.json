@@ -1,7 +1,6 @@
 {
-  "source": "github:metyatech/agent-rules@HEAD",
-  "domains": ["node"],
-  "extra": [],
+  "sources": ["github:metyatech/agent-rules"],
+  "profile": "node-cli",
   "claude": {
     "enabled": true,
     "output": "CLAUDE.md"
